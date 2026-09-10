@@ -10,7 +10,7 @@ A local MCP server for Windows desktop interaction and Xiaomi MiMo AI workflows.
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
-![MCP tools](https://img.shields.io/badge/MCP%20tools-26-7C3AED)
+![MCP tools](https://img.shields.io/badge/MCP%20tools-28-7C3AED)
 
 **Window screenshots · Unicode input · Smooth dragging · Cross-window drops · Live MiMo events**
 
@@ -33,7 +33,7 @@ by Xiaomi, Microsoft, or the Model Context Protocol maintainers.
 
 | Capability | What it gives you |
 |---|---|
-| **26 focused tools** | Desktop input and MiMo API operations in one stdio server |
+| **28 focused tools** | Desktop input and MiMo API operations in one stdio server |
 | **Window-scoped images** | Capture a chosen client area without a full-desktop screenshot fallback |
 | **Unicode typing** | Enter text such as Thai directly, without replacing clipboard contents |
 | **Smooth mouse gestures** | Left/right/middle drag, waypoints, and adjustable duration |
@@ -124,7 +124,7 @@ output is normal: it is waiting for MCP requests on stdin.
 & .\.venv\Scripts\python.exe test_mcp_client.py
 ```
 
-The client initializes the server, discovers **26 tools**, checks basic calls and
+The client initializes the server, discovers **28 tools**, checks basic calls and
 errors, and verifies shutdown. Its MiMo screenshot check is explicitly skipped if
 the MiMo window is unavailable or minimized. A skipped check is not a capture pass.
 
@@ -134,6 +134,38 @@ Suggested first request to your assistant:
 > Do not type or submit anything yet.
 
 ## Desktop workflows
+
+### Delivery is not verification (1.8.0)
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the layers, state transitions, Win32/COM
+choices, timeout scope, and known limitations.
+
+Use **`desktop_paste_text`** for reliable mixed-script entry through the clipboard.
+It deliberately replaces clipboard contents and sends Ctrl+V; select existing text
+and observe again first if replacing an editor. Existing `desktop_type_text` keeps
+its Unicode default for compatibility and now warns about app/IME conversion.
+
+Input results now say `outcome: input_delivered`, `verification: not_performed`.
+After entering text, call `desktop_inspect`, choose the actual editor element, then:
+
+```json
+{
+  "observation_id": "<fresh editor observation>",
+  "element_index": 5,
+  "expected_text": "ทดสอบ mimo-desktop สำเร็จ"
+}
+```
+
+Send these arguments to **`desktop_verify_text`**. It reads ValuePattern or
+TextPattern and returns `verified`, `mismatch`, or `unavailable`. It compares exact
+characters, not just length; does not return actual document text; and does not
+pretend that unsupported providers passed. Expected text is limited to 2,000
+characters. A new inspection is required after each action.
+
+For cross-window drag, optional `pickup_ms` (default 150) and `drop_ms` (default 300)
+allow 50–2,000 ms of application processing time. Target/Escape checks continue
+during these waits. A drop still needs an app-specific postcondition; longer dwell
+does not prove that every destination accepts the data.
 
 ### UI Automation and verified layout (1.7.0)
 
@@ -331,7 +363,7 @@ One tick is 120 Windows wheel units. Set `axis` to `vertical` or `horizontal`.
 
 ## Tool reference
 
-### Windows desktop — 12 tools
+### Windows desktop — 14 tools
 
 | Tool | Purpose |
 |---|---|
@@ -347,6 +379,8 @@ One tick is 120 Windows wheel units. Set `axis` to `vertical` or `horizontal`.
 | `desktop_click_element` | Revalidate and click an observed UI element |
 | `desktop_verify_element` | Exact accessible-name comparison |
 | `desktop_set_window_rect` | Move/resize and report actual window geometry |
+| `desktop_paste_text` | Explicit clipboard text transport for mixed scripts |
+| `desktop_verify_text` | Exact editor text comparison through UIA patterns |
 
 ### MiMo integration — 14 tools
 
@@ -406,11 +440,11 @@ tested at the stdio contract level; it is not a claim of certification across ho
 ### Local tests without desktop input
 
 ```powershell
-& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader
+& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
-The first command covers **50 cases**, including stale observations, occlusion,
+The first command covers **57 cases**, including stale observations, occlusion,
 Unicode input construction, drag cleanup, modifiers, and HTTP response bounds.
 The second covers **13 SSE scenarios** using a local fixture server.
 

@@ -5,9 +5,10 @@ import subprocess
 import sys
 
 
-def read_ui(hwnd):
+def read_ui(hwnd, verification=None):
     try:
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('uia_worker.py')), str(hwnd)],
+            input=json.dumps(verification or {}).encode('utf-8'),
             capture_output=True, timeout=8, creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError('UI Automation timed out after 8 seconds; provider may be unresponsive') from exc

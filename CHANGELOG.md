@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0
+
+- Separate input delivery from semantic verification in `result_contract.py`.
+- Add explicit `desktop_paste_text` as the recommended mixed-script transport.
+- Add `desktop_verify_text` using UIA ValuePattern/TextPattern, without returning document contents.
+- Add configurable cross-window pickup/drop dwell with cancellation and target checks.
+- Document architectural boundaries, compatibility, and postcondition limitations.
+- 28 tools; 57 unit tests; native editor text match/mismatch live checks.
+
 ## 1.7.0
 
 - Add `desktop_inspect`: screenshot plus a bounded UI Automation tree.

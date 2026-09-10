@@ -11,6 +11,7 @@ import secrets
 import time
 from clipboard_text import set_text as set_clipboard_text
 from uia_reader import read_ui
+from result_contract import annotate
 
 U = C.WinDLL('user32', use_last_error=True)
 K = C.WinDLL('kernel32', use_last_error=True)
@@ -211,6 +212,18 @@ class Desktop:
         return {'ok': True, 'matched': matched, 'actual_name': row['name'], 'hwnd': w['hwnd'],
                 'note': 'Exact UIA Name comparison, not full document contents or task success.'}
 
+    def verify_text(self, args):
+        expected = args.get('expected_text')
+        if not isinstance(expected, str) or len(expected) > 2000:
+            raise ValueError('expected_text must be a string up to 2000 characters')
+        w, row = self.resolve_element(args)
+        result = read_ui(w['hwnd'], {'runtime_id': row['runtime_id'], 'expected_text': expected})
+        self.check_target(w)
+        return {'ok': True, **result, 'hwnd': w['hwnd'], 'observe_again': True}
+
+    def paste_text(self, args):
+        return self.type_text({**args, 'method': 'clipboard'})
+
     def set_window_rect(self, args):
         values = [integer(args, key, low, high) for key, low, high in
                   [('x', -32768, 32767), ('y', -32768, 32767), ('width', 100, 8000), ('height', 100, 8000)]]
@@ -409,6 +422,8 @@ class Desktop:
         if button not in ('left', 'right', 'middle'):
             raise ValueError('button must be left, right or middle')
         duration = integer({'duration_ms': args.get('duration_ms', 1000)}, 'duration_ms', 100, 10000)
+        pickup = integer({'pickup_ms': args.get('pickup_ms', 150)}, 'pickup_ms', 50, 2000)
+        drop = integer({'drop_ms': args.get('drop_ms', 300)}, 'drop_ms', 50, 2000)
         destination_id = args.get('destination_observation_id')
         if destination_id == args.get('observation_id'):
             raise ValueError('Use two distinct observations for cross-window drag')
@@ -426,6 +441,20 @@ class Desktop:
             hit = U.WindowFromPoint(W.POINT(*end))
             if not hit or U.GetAncestor(hit, 2) != destination['hwnd']:
                 raise ValueError('Destination is covered; arrange both windows visibly and observe again')
+        def pause_checked(milliseconds):
+            # Dwell gives the app time to enter/accept drag mode, without a long blind wait.
+            remaining = milliseconds
+            while remaining > 0:
+                interval = min(25, remaining)
+                time.sleep(interval / 1000)
+                remaining -= interval
+                if U.GetAsyncKeyState(27) & 0x8000:
+                    raise RuntimeError('Drag cancelled by Escape; partial movement may remain')
+                self.check_target(source, foreground=False)
+                self.check_target(destination, foreground=False)
+                if U.GetForegroundWindow() not in (source['hwnd'], destination['hwnd']):
+                    raise FocusRequired(source['hwnd'])
+                visible_destination()
         visible_destination()
         self.point({'x': sx, 'y': sy}, source)
         down, up = {'left': (2, 4), 'right': (8, 16), 'middle': (32, 64)}[button]
@@ -436,7 +465,7 @@ class Desktop:
             self.check_target(destination, foreground=False)
             attempted = True
             send([keyboard(code) for code in modifiers] + [mouse(down)])
-            time.sleep(.05)
+            pause_checked(pickup)
             for i in range(1, steps+1):
                 time.sleep(duration / 1000 / steps)
                 if U.GetAsyncKeyState(27) & 0x8000:
@@ -450,7 +479,7 @@ class Desktop:
                 y = round(start[1] + (end[1]-start[1])*i/steps)
                 if not U.SetCursorPos(x, y):
                     raise RuntimeError('Cannot move pointer during cross-window drag')
-            time.sleep(.05)
+            pause_checked(drop)
             self.check_target(destination, foreground=False)
             visible_destination()
         finally:
@@ -483,7 +512,8 @@ class Desktop:
             events.extend((keyboard(scan=unit, flags=4), keyboard(scan=unit, flags=6)))
         send(events)
         return {'ok': True, 'characters': len(text), 'hwnd': w['hwnd'], 'method': method,
-                'observe_again': True, 'note': 'Unicode events sent; inspect text for app/IME conversion.'}
+                'observe_again': True, 'delivery_warning': 'App/IME can transform Unicode key events. Prefer desktop_paste_text for mixed scripts and verify actual text.',
+                'note': 'Unicode events sent; inspect text for app/IME conversion.'}
 
     def press_key(self, args):
         events = key_events(args.get('key'))
@@ -541,7 +571,7 @@ def build_tools(capture, encode, blank):
             try:
                 result = getattr(desktop, method)(args)
                 result['elapsed_ms'] = round((time.monotonic()-started)*1000)
-                return result
+                return annotate(method, result)
             except FocusRequired as exc:
                 desktop.observations.clear()
                 return {'ok': False, 'status': 'waiting_for_focus', 'hwnd': exc.hwnd,
@@ -560,6 +590,10 @@ def build_tools(capture, encode, blank):
                     U.SetThreadDpiAwarenessContext(previous)
         return run
     specs.extend([
+        ('paste_text', 'Recommended explicit text-entry path for mixed scripts: replace clipboard and send Ctrl+V. Leaves supplied text on clipboard. Does not select existing text. Inspect/select/reinspect first for replace-all. Input delivery is not text verification.',
+         {**token, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, ['observation_id', 'text']),
+        ('verify_text', 'Read-only exact editor text verification via UIA ValuePattern/TextPattern. Use a fresh desktop_inspect element_index for the editor. Returns verified/mismatch/unavailable. No OCR guess or mutation. Does not return actual text. Unsupported providers report unavailable.',
+         {**token, 'element_index': {'type': 'integer', 'minimum': 0}, 'expected_text': {'type': 'string', 'maxLength': 2000}}, ['observation_id', 'element_index', 'expected_text']),
         ('inspect', 'Capture window image and a bounded UI Automation tree. Returns element_index values tied to observation_id. Password controls omitted; names may contain private data. Providers can time out. Reinspect after input.',
          {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
         ('click_element', 'Revalidate an element from desktop_inspect then click its center. Rejects changed identity/name/rectangle, disabled, offscreen, or covered targets. Observe afterwards.',
@@ -569,6 +603,10 @@ def build_tools(capture, encode, blank):
         ('set_window_rect', 'Move/resize the observed foreground window using physical SCREEN coordinates for the entire window (including frame). Returns requested and actual geometry; matched may be false if app constrains size. Observe afterwards.',
          {**token, **{key: {'type': 'integer'} for key in ('x','y','width','height')}}, ['observation_id','x','y','width','height']),
     ])
+    for name, description, props, required in specs:
+        if name == 'drag_between':
+            props['pickup_ms'] = {'type': 'integer', 'minimum': 50, 'maximum': 2000, 'default': 150}
+            props['drop_ms'] = {'type': 'integer', 'minimum': 50, 'maximum': 2000, 'default': 300}
     return [{'name': 'desktop_' + name, 'description': description,
              'inputSchema': {'type': 'object', 'properties': props, 'required': required, 'additionalProperties': False},
              'handler': handler(name)} for name, description, props, required in specs]

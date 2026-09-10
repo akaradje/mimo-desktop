@@ -52,6 +52,10 @@ def main():
     checkbox = native.CreateWindowExW(0, 'BUTTON', 'UIA check test', 0x50000003,
         420, 5, 200, 25, root.winfo_id(), None, None, None)
     assert checkbox, 'Cannot create native test checkbox'
+    verification_text = 'ทดสอบ mimo-desktop ✓'
+    native_editor = native.CreateWindowExW(0, 'EDIT', verification_text, 0x50000000,
+        420, 32, 200, 25, root.winfo_id(), 9001, None, None)
+    assert native_editor, 'Cannot create native verification editor'
     positions = {name: (widget.winfo_x()+widget.winfo_width()//2,
                         widget.winfo_y()+widget.winfo_height()//2)
                  for name, widget in [('entry', entry), ('button', button), ('area', area)]}
@@ -143,6 +147,13 @@ def main():
             time.sleep(.1)
             assert values()[1]['checked'] == 1
             print('PASS real UIA-selected checkbox click and checked-state verification')
+            for expected, should_match in [(verification_text, True), ('X'+verification_text[1:], False)]:
+                state = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+                editor = next(e for e in state['elements'] if e['automation_id'] == '9001')
+                checked = call('desktop_verify_text', {'observation_id': state['observation_id'],
+                    'element_index': editor['element_index'], 'expected_text': expected})
+                assert checked['matched'] is should_match, checked
+            print('PASS real UIA editor text match and mismatch (mixed Thai/Latin)')
             moved = call('desktop_set_window_rect', {'observation_id': observe(),
                 'x': 100, 'y': 100, 'width': 800, 'height': 600})
             assert moved['matched'], moved

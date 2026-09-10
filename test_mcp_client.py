@@ -142,6 +142,8 @@ def main() -> int:
             "desktop_click_element",
             "desktop_verify_element",
             "desktop_set_window_rect",
+            "desktop_paste_text",
+            "desktop_verify_text",
         }
         missing = required - set(names)
         if missing:

@@ -344,6 +344,28 @@ class DesktopTests(unittest.TestCase):
             self.desktop.set_window_rect({'observation_id': 'test', 'x': 0, 'y': 0, 'width': 0, 'height': 400})
         self.api.SetWindowPos.assert_not_called()
 
+    @patch.object(d, 'read_ui')
+    def test_verify_text_reads_selected_identity(self, reader):
+        row = self.element_setup()
+        reader.side_effect = [{'elements': [row]}, {'ok': True, 'verification': 'verified', 'matched': True}]
+        result = self.desktop.verify_text({'observation_id': 'test', 'element_index': 0, 'expected_text': 'ไทย English'})
+        self.assertTrue(result['matched'])
+        self.assertEqual(reader.call_args.args[1]['runtime_id'], row['runtime_id'])
+        self.api.SendInput.assert_not_called()
+
+    @patch.object(d, 'set_clipboard_text')
+    def test_paste_text_explicit_adapter(self, clipboard):
+        result = self.desktop.paste_text({'observation_id': 'test', 'text': 'ไทย English'})
+        clipboard.assert_called_once_with('ไทย English')
+        self.assertEqual(result['method'], 'clipboard')
+
+    def test_bad_drag_dwell_no_input(self):
+        args = self.cross_setup()
+        args['drop_ms'] = 100000
+        with self.assertRaises(ValueError):
+            self.desktop.drag_between(args)
+        self.api.SendInput.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
