@@ -137,10 +137,17 @@ def key_events(chord):
     return [event(c) for c in codes] + [event(c, True) for c in reversed(codes)]
 
 
+class FocusRequired(ValueError):
+    def __init__(self, hwnd):
+        self.hwnd = hwnd
+        super().__init__('Window needs manual foreground activation; stop automatic retries')
+
+
 class Desktop:
     def __init__(self, capture, encode, blank):
         self.capture, self.encode, self.blank = capture, encode, blank
         self.observations = {}
+        self.waiting_for_focus = set()
 
     def window(self, hwnd):
         if not U.IsWindow(hwnd) or not U.IsWindowVisible(hwnd):
@@ -189,13 +196,18 @@ class Desktop:
         hwnd = integer(args, 'hwnd', 1, 2**63-1)
         w = self.window(hwnd)
         if args.get('focus', False):
+            if U.GetForegroundWindow() == hwnd:
+                self.waiting_for_focus.discard(hwnd)
+            elif hwnd in self.waiting_for_focus:
+                raise FocusRequired(hwnd)
             if w['minimized']:
                 U.ShowWindow(hwnd, 9)
             if U.GetForegroundWindow() != hwnd:
                 U.SetForegroundWindow(hwnd)
             time.sleep(.15)
             if U.GetForegroundWindow() != hwnd:
-                raise RuntimeError('Windows refused foreground activation; select the window manually')
+                self.waiting_for_focus.add(hwnd)
+                raise FocusRequired(hwnd)
             w = self.window(hwnd)
         if w['minimized']:
             raise ValueError('Window minimized; observe with focus=true to restore')
@@ -237,7 +249,7 @@ class Desktop:
         if now['minimized'] or any(now[k] != w[k] for k in ('pid', 'path', 'client')):
             raise ValueError('Window moved, resized or changed owner; observe again')
         if foreground and U.GetForegroundWindow() != w['hwnd']:
-            raise ValueError('Target is not foreground; observe with focus=true')
+            raise FocusRequired(w['hwnd'])
 
     def point(self, args, w):
         r = w['client']
@@ -450,6 +462,12 @@ def build_tools(capture, encode, blank):
             previous = U.SetThreadDpiAwarenessContext(W.HANDLE(-4))
             try:
                 return getattr(desktop, method)(args)
+            except FocusRequired as exc:
+                desktop.observations.clear()
+                return {'ok': False, 'status': 'waiting_for_focus', 'hwnd': exc.hwnd,
+                        'retry_automatically': False, 'observation_invalidated': True,
+                        'next_action': 'Ask the user to select the target window manually, then call desktop_observe for a fresh observation_id before any input.',
+                        'note': 'This call is not waiting in the background. Inspect current contents before continuing; earlier partial actions or clipboard changes are not undone.'}
             finally:
                 if previous:
                     U.SetThreadDpiAwarenessContext(previous)

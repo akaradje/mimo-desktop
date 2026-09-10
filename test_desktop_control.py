@@ -252,6 +252,36 @@ class DesktopTests(unittest.TestCase):
             self.desktop.type_text({'observation_id': 'test', 'text': 'abc', 'method': 'clipboard'})
         self.api.SendInput.assert_not_called()
 
+    @patch.object(d.time, 'sleep')
+    def test_focus_refusal_not_retried(self, _sleep):
+        self.api.GetForegroundWindow.return_value = 99
+        for _ in range(3):
+            with self.assertRaises(d.FocusRequired):
+                self.desktop.observe({'hwnd': 10, 'focus': True})
+        self.api.SetForegroundWindow.assert_called_once_with(10)
+        self.api.SendInput.assert_not_called()
+        self.assertEqual(self.desktop.observations, {})
+
+    @patch.object(d.time, 'sleep')
+    def test_manual_focus_recovers(self, _sleep):
+        self.desktop.waiting_for_focus.add(10)
+        self.desktop.capture.return_value = (b'pixels', 300, 200, 'test', [])
+        self.desktop.blank.return_value = (False, '')
+        self.desktop.encode.return_value = b'png'
+        result = self.desktop.observe({'hwnd': 10, 'focus': True})
+        self.assertTrue(result['ok'])
+        self.assertNotIn(10, self.desktop.waiting_for_focus)
+        self.assertIn(result['observation_id'], self.desktop.observations)
+        self.api.SetForegroundWindow.assert_not_called()
+
+    def test_focus_status_tool_result(self):
+        with patch.object(d.Desktop, 'observe', side_effect=d.FocusRequired(10)):
+            tool = next(t for t in d.build_tools(Mock(), Mock(), Mock()) if t['name'] == 'desktop_observe')
+            result = tool['handler']({'hwnd': 10})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 'waiting_for_focus')
+        self.assertFalse(result['retry_automatically'])
+
 
 if __name__ == '__main__':
     unittest.main()

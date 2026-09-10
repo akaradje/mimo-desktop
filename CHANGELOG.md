@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.2
+
+- Return structured `waiting_for_focus` errors with manual recovery instructions.
+- Suppress repeated activation attempts after Windows refuses foreground until
+  the target is observed already in foreground.
+- Invalidate observations on focus failures and test refusal, recovery, and tool output.
+
 ## 1.6.1
 
 - Add explicit `method: clipboard` to text entry for application/IME Unicode mis-mapping.

@@ -206,6 +206,24 @@ used` means capture again and use the new ID. Each action consumes its ID,
 including an attempted action that later fails validation. Do not reuse the ID
 from a click to type, or the ID from Ctrl+A to paste.
 
+Starting with **1.6.2**, focus failures return a structured tool error:
+
+```json
+{
+  "ok": false,
+  "status": "waiting_for_focus",
+  "hwnd": 12345,
+  "retry_automatically": false,
+  "observation_invalidated": true
+}
+```
+
+This is an immediate response, not a background wait. Select the target manually,
+then observe again for a fresh ID. After Windows refuses an activation request,
+repeated `focus: true` calls for that window do not call SetForegroundWindow again
+until the server observes it already in foreground. This suppression is scoped
+to the current MCP process. Errors do not undo earlier input or clipboard changes.
+
 ### Drag inside a window
 
 Use `desktop_drag` after inspecting the source image:
@@ -350,7 +368,7 @@ tested at the stdio contract level; it is not a claim of certification across ho
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
-The first command covers **37 cases**, including stale observations, occlusion,
+The first command covers **40 cases**, including stale observations, occlusion,
 Unicode input construction, drag cleanup, modifiers, and HTTP response bounds.
 The second covers **13 SSE scenarios** using a local fixture server.
 
