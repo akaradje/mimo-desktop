@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.7.0
+
+- Add `desktop_inspect`: screenshot plus a bounded UI Automation tree.
+- Add `desktop_click_element`: revalidate runtime identity and geometry before clicking.
+- Add `desktop_verify_element`: exact accessible-name checks without claiming full document verification.
+- Add `desktop_set_window_rect`: move/resize with requested versus actual geometry.
+- Isolate read-only UIA provider calls in an 8-second subprocess timeout.
+- Add structured desktop error results and elapsed timing on normal results.
+- Add pywinauto dependency and real native-checkbox / window-layout checks.
+- 26 tools; 50 unit tests; 8 single-window and 2 cross-window live scenarios.
+
 ## 1.6.2
 
 - Return structured `waiting_for_focus` errors with manual recovery instructions.

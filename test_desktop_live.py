@@ -40,6 +40,18 @@ def main():
     area.bind('<B1-Motion>', lambda event: counters.update(drag_moves=counters['drag_moves']+1), add='+')
     area.bind('<ButtonRelease-1>', lambda event: counters.update(drag_up=counters['drag_up']+1), add='+')
     root.update()
+    # Native checkbox gives UIA a real named control with queryable state.
+    import ctypes as C
+    from ctypes import wintypes as W
+    native = C.WinDLL('user32', use_last_error=True)
+    native.CreateWindowExW.argtypes = [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD,
+        C.c_int, C.c_int, C.c_int, C.c_int, W.HWND, W.HMENU, W.HINSTANCE, C.c_void_p]
+    native.CreateWindowExW.restype = W.HWND
+    native.SendMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
+    native.SendMessageW.restype = W.LPARAM
+    checkbox = native.CreateWindowExW(0, 'BUTTON', 'UIA check test', 0x50000003,
+        420, 5, 200, 25, root.winfo_id(), None, None, None)
+    assert checkbox, 'Cannot create native test checkbox'
     positions = {name: (widget.winfo_x()+widget.winfo_width()//2,
                         widget.winfo_y()+widget.winfo_height()//2)
                  for name, widget in [('entry', entry), ('button', button), ('area', area)]}
@@ -50,7 +62,7 @@ def main():
     def pump():
         try:
             response = requests.get_nowait()
-            response.put((entry.get(), dict(counters)))
+            response.put((entry.get(), {**counters, 'checked': int(native.SendMessageW(checkbox, 0x00F0, 0, 0))}))
         except queue.Empty:
             pass
         if result.get('done'):
@@ -117,6 +129,24 @@ def main():
             assert after['drag_moves'] > before['drag_moves'], after
             assert after['drag_up'] == before['drag_up']+1, after
             print('PASS real multi-point drag motion and button release')
+            state = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+            assert state['elements'], 'UIA returned no elements'
+            root_element = next(e for e in state['elements'] if e['name'] == 'mimo-desktop isolated input test')
+            check = call('desktop_verify_element', {'observation_id': state['observation_id'],
+                'element_index': root_element['element_index'], 'expected_name': 'mimo-desktop isolated input test'})
+            assert check['matched'], check
+            print('PASS real UIA tree and exact window-name verification')
+            state = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+            checkbox_element = next(e for e in state['elements'] if e['name'] == 'UIA check test')
+            call('desktop_click_element', {'observation_id': state['observation_id'],
+                'element_index': checkbox_element['element_index']})
+            time.sleep(.1)
+            assert values()[1]['checked'] == 1
+            print('PASS real UIA-selected checkbox click and checked-state verification')
+            moved = call('desktop_set_window_rect', {'observation_id': observe(),
+                'x': 100, 'y': 100, 'width': 800, 'height': 600})
+            assert moved['matched'], moved
+            print('PASS real window move/resize with actual geometry check')
             result['exit'] = 0
         except Exception as exc:
             print(f'FAIL {type(exc).__name__}: {ascii(str(exc))}')

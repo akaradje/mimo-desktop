@@ -282,6 +282,68 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(result['status'], 'waiting_for_focus')
         self.assertFalse(result['retry_automatically'])
 
+    def element_setup(self):
+        row = {'runtime_id': [1, 2], 'name': 'Button', 'control_type': 'Button',
+               'automation_id': 'test', 'enabled': True, 'visible': True,
+               'rect': [-480, 120, -380, 160]}
+        self.desktop.elements['test'] = [row]
+        return row
+
+    @patch.object(d, 'read_ui')
+    def test_element_click_revalidates(self, reader):
+        row = self.element_setup()
+        reader.return_value = {'elements': [dict(row)]}
+        self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SetCursorPos.assert_called_with(-430, 140)
+        self.assertEqual(self.api.SendInput.call_args.args[0], 2)
+
+    @patch.object(d, 'read_ui')
+    def test_changed_element_rejected(self, reader):
+        row = self.element_setup()
+        reader.return_value = {'elements': [{**row, 'name': 'Other'}]}
+        with self.assertRaises(ValueError):
+            self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SendInput.assert_not_called()
+
+    @patch.object(d, 'read_ui')
+    def test_disabled_element_rejected(self, reader):
+        row = self.element_setup()
+        row['enabled'] = False
+        reader.return_value = {'elements': [row]}
+        with self.assertRaises(ValueError):
+            self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SendInput.assert_not_called()
+
+    @patch.object(d, 'read_ui')
+    def test_truncated_name_never_exact_match(self, reader):
+        row = self.element_setup()
+        row['name_truncated'] = True
+        reader.return_value = {'elements': [row]}
+        result = self.desktop.verify_element({'observation_id': 'test', 'element_index': 0, 'expected_name': 'Button'})
+        self.assertFalse(result['matched'])
+
+    @patch.object(d, 'read_ui', side_effect=RuntimeError('timeout'))
+    def test_element_timeout_no_input(self, reader):
+        self.element_setup()
+        with self.assertRaises(RuntimeError):
+            self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SendInput.assert_not_called()
+
+    @patch.object(d.time, 'sleep')
+    def test_window_geometry_report(self, _sleep):
+        def rect(hwnd, pointer):
+            pointer._obj.left, pointer._obj.top = 10, 20
+            pointer._obj.right, pointer._obj.bottom = 610, 420
+            return True
+        self.api.GetWindowRect.side_effect = rect
+        result = self.desktop.set_window_rect({'observation_id': 'test', 'x': 10, 'y': 20, 'width': 600, 'height': 400})
+        self.assertTrue(result['matched'])
+
+    def test_window_geometry_invalid_no_move(self):
+        with self.assertRaises(ValueError):
+            self.desktop.set_window_rect({'observation_id': 'test', 'x': 0, 'y': 0, 'width': 0, 'height': 400})
+        self.api.SetWindowPos.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

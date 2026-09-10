@@ -138,6 +138,10 @@ def main() -> int:
             "desktop_scroll",
             "desktop_drag",
             "desktop_drag_between",
+            "desktop_inspect",
+            "desktop_click_element",
+            "desktop_verify_element",
+            "desktop_set_window_rect",
         }
         missing = required - set(names)
         if missing:

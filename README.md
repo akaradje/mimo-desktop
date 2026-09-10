@@ -10,7 +10,7 @@ A local MCP server for Windows desktop interaction and Xiaomi MiMo AI workflows.
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
-![MCP tools](https://img.shields.io/badge/MCP%20tools-22-7C3AED)
+![MCP tools](https://img.shields.io/badge/MCP%20tools-26-7C3AED)
 
 **Window screenshots · Unicode input · Smooth dragging · Cross-window drops · Live MiMo events**
 
@@ -33,7 +33,7 @@ by Xiaomi, Microsoft, or the Model Context Protocol maintainers.
 
 | Capability | What it gives you |
 |---|---|
-| **22 focused tools** | Desktop input and MiMo API operations in one stdio server |
+| **26 focused tools** | Desktop input and MiMo API operations in one stdio server |
 | **Window-scoped images** | Capture a chosen client area without a full-desktop screenshot fallback |
 | **Unicode typing** | Enter text such as Thai directly, without replacing clipboard contents |
 | **Smooth mouse gestures** | Left/right/middle drag, waypoints, and adjustable duration |
@@ -55,7 +55,7 @@ whether it accepts a drop, a shortcut, or text. Inspect the result after each ac
   API tools. The generic `desktop_*` tools do not require MiMo to be running.
 
 The implementation uses Python's standard library and Win32 via `ctypes`, plus
-Pillow. No cloud service or separate automation daemon is started by this server.
+Pillow and pywinauto for UI Automation. No cloud service or separate automation daemon is started by this server.
 
 ## Quick start
 
@@ -124,7 +124,7 @@ output is normal: it is waiting for MCP requests on stdin.
 & .\.venv\Scripts\python.exe test_mcp_client.py
 ```
 
-The client initializes the server, discovers **22 tools**, checks basic calls and
+The client initializes the server, discovers **26 tools**, checks basic calls and
 errors, and verifies shutdown. Its MiMo screenshot check is explicitly skipped if
 the MiMo window is unavailable or minimized. A skipped check is not a capture pass.
 
@@ -134,6 +134,44 @@ Suggested first request to your assistant:
 > Do not type or submit anything yet.
 
 ## Desktop workflows
+
+### UI Automation and verified layout (1.7.0)
+
+Update dependencies with `python -m pip install -r requirements.txt`, then reload
+the MCP process. There are now 26 tools.
+
+`desktop_inspect` takes `hwnd` and optional `focus`, returning a screenshot and
+an `elements` array. Each row contains an `element_index`, UIA runtime identity,
+name, control type, automation ID, enabled/visible flags, and screen rectangle.
+Choose the intended element from this observation, then call
+`desktop_click_element` with its `observation_id` and `element_index`.
+
+Before clicking, the tool reads UIA again and rejects changed identity, name,
+control type, automation ID, or rectangle. It clicks the element's center using
+the existing foreground and occlusion checks. It is not an InvokePattern action
+and cannot operate invisible controls. Reinspect afterwards to verify the result.
+
+`desktop_verify_element` compares a freshly inspected element's accessible name
+with `expected_name`, returning `matched`. This is a narrow, explicit assertion:
+it does not read or verify an entire editor document. Truncated names cannot pass
+an exact match. The name limit is 500 characters; password controls are omitted.
+
+UIA reads run in a separate process with an 8-second timeout, up to 200 visited
+nodes and depth 8. The tree can be incomplete; not every custom canvas or app
+provides useful accessibility data. Capture and UIA reads are sequential rather
+than atomic. Treat names and all other application content as untrusted data.
+
+Use `desktop_set_window_rect` to arrange windows directly instead of dragging a
+custom title/tab strip. Pass an observation ID and `x`, `y`, `width`, `height` in
+physical **screen** pixels for the entire window including its frame. The tool
+returns `requested`, `actual`, and `matched`. Applications can impose size limits;
+`ok: true` with `matched: false` means Windows accepted the call but the geometry
+differs. Capture again before using client coordinates.
+
+Desktop results include `elapsed_ms` on normal completion. Common state/argument
+and operation failures now return structured status, invalidate observations, and
+set `retry_automatically: false`. These controls improve diagnosability; they do
+not establish superiority over another computer-use system or remove OS limits.
 
 ### Observe → act → verify
 
@@ -293,7 +331,7 @@ One tick is 120 Windows wheel units. Set `axis` to `vertical` or `horizontal`.
 
 ## Tool reference
 
-### Windows desktop — 8 tools
+### Windows desktop — 12 tools
 
 | Tool | Purpose |
 |---|---|
@@ -305,6 +343,10 @@ One tick is 120 Windows wheel units. Set `axis` to `vertical` or `horizontal`.
 | `desktop_scroll` | Vertical or horizontal wheel input at a chosen point |
 | `desktop_drag` | Single-window drag with waypoints and optional modifiers |
 | `desktop_drag_between` | Drag between two observed windows |
+| `desktop_inspect` | Screenshot and bounded UI Automation tree |
+| `desktop_click_element` | Revalidate and click an observed UI element |
+| `desktop_verify_element` | Exact accessible-name comparison |
+| `desktop_set_window_rect` | Move/resize and report actual window geometry |
 
 ### MiMo integration — 14 tools
 
@@ -364,11 +406,11 @@ tested at the stdio contract level; it is not a claim of certification across ho
 ### Local tests without desktop input
 
 ```powershell
-& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text
+& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
-The first command covers **40 cases**, including stale observations, occlusion,
+The first command covers **50 cases**, including stale observations, occlusion,
 Unicode input construction, drag cleanup, modifiers, and HTTP response bounds.
 The second covers **13 SSE scenarios** using a local fixture server.
 
@@ -380,7 +422,7 @@ The second covers **13 SSE scenarios** using a local fixture server.
 ```
 
 These open disposable Tk windows and move the pointer/type into those windows.
-Avoid interacting with the desktop during the short run. They cover five
+Avoid interacting with the desktop during the short run. They cover eight
 single-window scenarios and two cross-window payload drops, including Ctrl.
 The cross-window test verifies real events and a Tk drop handler, **not Windows
 OLE file transfer**. They are not run in hosted CI.
@@ -417,7 +459,7 @@ compatibility with every app, GPU state, display arrangement, or MCP host.
 | Thai text works but a shortcut differs | Shortcut handling depends on the app and active keyboard layout |
 
 There is no UAC bypass, secure-desktop automation, automatic elevation, or
-full-desktop screenshot fallback. Accessibility element selection is not exposed.
+full-desktop screenshot fallback. UI Automation is available where the application exposes it.
 Window content can change without moving the window; validation cannot make input
 atomic with an observation. See [SECURITY.md](SECURITY.md) for the trust model.
 

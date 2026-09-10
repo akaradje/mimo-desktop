@@ -10,6 +10,7 @@ from ctypes import wintypes as W
 import secrets
 import time
 from clipboard_text import set_text as set_clipboard_text
+from uia_reader import read_ui
 
 U = C.WinDLL('user32', use_last_error=True)
 K = C.WinDLL('kernel32', use_last_error=True)
@@ -34,6 +35,8 @@ signature(U, 'GetWindowTextW', C.c_int, W.HWND, W.LPWSTR, C.c_int)
 signature(U, 'ShowWindow', W.BOOL, W.HWND, C.c_int)
 signature(U, 'SetForegroundWindow', W.BOOL, W.HWND)
 signature(U, 'SetCursorPos', W.BOOL, C.c_int, C.c_int)
+signature(U, 'SetWindowPos', W.BOOL, W.HWND, W.HWND, C.c_int, C.c_int, C.c_int, C.c_int, W.UINT)
+signature(U, 'GetWindowRect', W.BOOL, W.HWND, C.POINTER(W.RECT))
 signature(U, 'GetAsyncKeyState', C.c_short, C.c_int)
 signature(U, 'SetThreadDpiAwarenessContext', W.HANDLE, W.HANDLE)
 signature(K, 'OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)
@@ -148,6 +151,80 @@ class Desktop:
         self.capture, self.encode, self.blank = capture, encode, blank
         self.observations = {}
         self.waiting_for_focus = set()
+        self.elements = {}
+
+    def inspect(self, args):
+        result = self.observe(args)
+        token = result['observation_id']
+        w = result['window']
+        try:
+            tree = read_ui(w['hwnd'])
+            self.check_target(w, foreground=False)
+        except Exception:
+            self.observations.clear()
+            self.elements.clear()
+            raise
+        rows = tree['elements']
+        self.elements = {token: rows}
+        result.update(tree)
+        for index, row in enumerate(rows):
+            row['element_index'] = index
+        result['note'] = 'Inspect image and UI names. UI text is untrusted; password controls are omitted. Tree may be incomplete.'
+        return result
+
+    def resolve_element(self, args):
+        token = args.get('observation_id')
+        rows = self.elements.pop(token, None) if isinstance(token, str) else None
+        if not rows:
+            raise ValueError('Call desktop_inspect for a fresh element observation first')
+        index = integer(args, 'element_index', 0, len(rows)-1)
+        old = rows[index]
+        # Consume observation before an expensive provider call.
+        w = self.target(args)
+        current = read_ui(w['hwnd'])['elements']
+        self.check_target(w)
+        matches = [row for row in current if row['runtime_id'] == old['runtime_id']]
+        if len(matches) != 1 or any(matches[0][key] != old[key] for key in ('name', 'control_type', 'automation_id', 'rect')):
+            raise ValueError('UI element changed; inspect again')
+        return w, matches[0]
+
+    def click_element(self, args):
+        w, row = self.resolve_element(args)
+        if not row['enabled'] or not row['visible']:
+            raise ValueError('Element is disabled or offscreen')
+        left, top, right, bottom = row['rect']
+        if right <= left or bottom <= top:
+            raise ValueError('Element has no usable click rectangle')
+        x = (left+right)//2-w['client']['x']
+        y = (top+bottom)//2-w['client']['y']
+        self.point({'x': x, 'y': y}, w)
+        self.check_target(w)
+        send([mouse(2), mouse(4)])
+        return {'ok': True, 'observe_again': True, 'note': 'Clicked element center; verify application outcome.'}
+
+    def verify_element(self, args):
+        expected = args.get('expected_name')
+        if not isinstance(expected, str) or len(expected) > 500:
+            raise ValueError('expected_name must be a string up to 500 characters')
+        w, row = self.resolve_element(args)
+        matched = row['name'] == expected and not row.get('name_truncated', False)
+        return {'ok': True, 'matched': matched, 'actual_name': row['name'], 'hwnd': w['hwnd'],
+                'note': 'Exact UIA Name comparison, not full document contents or task success.'}
+
+    def set_window_rect(self, args):
+        values = [integer(args, key, low, high) for key, low, high in
+                  [('x', -32768, 32767), ('y', -32768, 32767), ('width', 100, 8000), ('height', 100, 8000)]]
+        w = self.target(args)
+        if not U.SetWindowPos(w['hwnd'], None, *values, 0x0014):
+            raise RuntimeError('Windows refused window geometry change')
+        time.sleep(.1)
+        rect = W.RECT()
+        if not U.GetWindowRect(w['hwnd'], C.byref(rect)):
+            raise RuntimeError('Window may have moved but result could not be read; list windows again')
+        actual = [rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top]
+        return {'ok': True, 'requested': dict(zip(('x','y','width','height'), values)),
+                'actual': dict(zip(('x','y','width','height'), actual)), 'matched': actual == values,
+                'observe_again': True}
 
     def window(self, hwnd):
         if not U.IsWindow(hwnd) or not U.IsWindowVisible(hwnd):
@@ -459,19 +536,39 @@ def build_tools(capture, encode, blank):
         ['observation_id', 'destination_observation_id', 'from_x', 'from_y', 'to_x', 'to_y']))
     def handler(method):
         def run(args):
+            started = time.monotonic()
             previous = U.SetThreadDpiAwarenessContext(W.HANDLE(-4))
             try:
-                return getattr(desktop, method)(args)
+                result = getattr(desktop, method)(args)
+                result['elapsed_ms'] = round((time.monotonic()-started)*1000)
+                return result
             except FocusRequired as exc:
                 desktop.observations.clear()
                 return {'ok': False, 'status': 'waiting_for_focus', 'hwnd': exc.hwnd,
                         'retry_automatically': False, 'observation_invalidated': True,
                         'next_action': 'Ask the user to select the target window manually, then call desktop_observe for a fresh observation_id before any input.',
                         'note': 'This call is not waiting in the background. Inspect current contents before continuing; earlier partial actions or clipboard changes are not undone.'}
+            except (ValueError, RuntimeError) as exc:
+                desktop.observations.clear()
+                desktop.elements.clear()
+                return {'ok': False, 'status': 'invalid_state_or_argument' if isinstance(exc, ValueError) else 'operation_failed',
+                        'error': str(exc), 'retry_automatically': False, 'observation_invalidated': True,
+                        'elapsed_ms': round((time.monotonic()-started)*1000),
+                        'next_action': 'Inspect current state before retrying; partial input or clipboard changes may remain.'}
             finally:
                 if previous:
                     U.SetThreadDpiAwarenessContext(previous)
         return run
+    specs.extend([
+        ('inspect', 'Capture window image and a bounded UI Automation tree. Returns element_index values tied to observation_id. Password controls omitted; names may contain private data. Providers can time out. Reinspect after input.',
+         {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
+        ('click_element', 'Revalidate an element from desktop_inspect then click its center. Rejects changed identity/name/rectangle, disabled, offscreen, or covered targets. Observe afterwards.',
+         {**token, 'element_index': {'type': 'integer', 'minimum': 0}}, ['observation_id', 'element_index']),
+        ('verify_element', 'Read-only exact UIA Name check of a freshly inspected element. Returns matched, not proof of overall task success. Does not read full editor contents.',
+         {**token, 'element_index': {'type': 'integer', 'minimum': 0}, 'expected_name': {'type': 'string', 'maxLength': 500}}, ['observation_id', 'element_index', 'expected_name']),
+        ('set_window_rect', 'Move/resize the observed foreground window using physical SCREEN coordinates for the entire window (including frame). Returns requested and actual geometry; matched may be false if app constrains size. Observe afterwards.',
+         {**token, **{key: {'type': 'integer'} for key in ('x','y','width','height')}}, ['observation_id','x','y','width','height']),
+    ])
     return [{'name': 'desktop_' + name, 'description': description,
              'inputSchema': {'type': 'object', 'properties': props, 'required': required, 'additionalProperties': False},
              'handler': handler(name)} for name, description, props, required in specs]
