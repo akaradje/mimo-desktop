@@ -16,5 +16,5 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements.txt
-      - run: python -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract
+      - run: python -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract test_motion test_activity
       - run: python test_sse_stress.py

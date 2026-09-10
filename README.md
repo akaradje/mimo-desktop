@@ -135,6 +135,37 @@ Suggested first request to your assistant:
 
 ## Desktop workflows
 
+### Visible activity and smoother input (1.9.0)
+
+A small **MIMO DESKTOP** badge now appears near the top-right of the primary
+display while a `desktop_*` tool is running. It shows the operation name, elapsed
+seconds, and a completion, error, or waiting-for-focus message. It is disabled and
+non-activating, so it does not receive clicks or take foreground. Normal results
+remain visible for about three seconds; a focus-wait message for about twelve.
+It reports MCP tool activity, not the model's thinking between calls, and does not
+claim task success. MiMo API-only operations do not use this desktop indicator.
+
+The indicator is enabled by default. Set the MCP server environment variable
+`MIMO_DESKTOP_OVERLAY=0` before launch to disable it. Reload the MCP process after
+updating: an old process will not display the new badge. The helper uses a bounded
+background queue and cannot block desktop input if the visual channel fails. Its
+messages contain only operation/state/timing, never typed text or window titles.
+This is best-effort UI telemetry; a helper startup failure does not fail the action.
+
+Pointer travel before clicks uses a short 180 ms eased movement. Drag interpolation
+uses smoothstep acceleration/deceleration on a monotonic deadline schedule, with
+approximately 60 planned frames per second. Slow validation skips overdue frames
+instead of adding a full extra delay each frame. The exact endpoint is retained;
+this is not a guarantee of a fixed frame rate under CPU/GPU or application load.
+Wheel requests are delivered one tick at a time, 30 ms apart, with foreground and
+Escape checks. App-specific scroll animation still depends on the application.
+
+To test the badge without touching application content:
+
+```powershell
+python test_activity_live.py --run
+```
+
 ### Delivery is not verification (1.8.0)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the layers, state transitions, Win32/COM
@@ -440,11 +471,11 @@ tested at the stdio contract level; it is not a claim of certification across ho
 ### Local tests without desktop input
 
 ```powershell
-& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract
+& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract test_motion test_activity
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
-The first command covers **57 cases**, including stale observations, occlusion,
+The first command covers **64 cases**, including stale observations, occlusion,
 Unicode input construction, drag cleanup, modifiers, and HTTP response bounds.
 The second covers **13 SSE scenarios** using a local fixture server.
 

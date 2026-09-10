@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.0
+
+- Add a visible native activity badge with operation, elapsed time, completion/error/focus-wait states.
+- Isolate status IPC in a bounded background queue; do not expose text, clipboard data, or window titles.
+- Use a disabled, non-activating, topmost native window; opt out with `MIMO_DESKTOP_OVERLAY=0`.
+- Add smoothstep pointer motion on an absolute monotonic schedule; skip overdue frames instead of adding drift.
+- Ease pointer travel before coordinate/element clicks and scroll; split wheel input into paced ticks.
+- Retain exact endpoint, target checks, Escape cancellation, and drag release cleanup.
+- Add motion and indicator regression tests; 64 unit tests.
+
 ## 1.8.0
 
 - Separate input delivery from semantic verification in `result_contract.py`.

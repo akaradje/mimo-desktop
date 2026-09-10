@@ -12,6 +12,8 @@ import time
 from clipboard_text import set_text as set_clipboard_text
 from uia_reader import read_ui
 from result_contract import annotate
+from motion import animate
+from activity import activity
 
 U = C.WinDLL('user32', use_last_error=True)
 K = C.WinDLL('kernel32', use_last_error=True)
@@ -36,6 +38,7 @@ signature(U, 'GetWindowTextW', C.c_int, W.HWND, W.LPWSTR, C.c_int)
 signature(U, 'ShowWindow', W.BOOL, W.HWND, C.c_int)
 signature(U, 'SetForegroundWindow', W.BOOL, W.HWND)
 signature(U, 'SetCursorPos', W.BOOL, C.c_int, C.c_int)
+signature(U, 'GetCursorPos', W.BOOL, C.POINTER(W.POINT))
 signature(U, 'SetWindowPos', W.BOOL, W.HWND, W.HWND, C.c_int, C.c_int, C.c_int, C.c_int, W.UINT)
 signature(U, 'GetWindowRect', W.BOOL, W.HWND, C.POINTER(W.RECT))
 signature(U, 'GetAsyncKeyState', C.c_short, C.c_int)
@@ -198,7 +201,7 @@ class Desktop:
             raise ValueError('Element has no usable click rectangle')
         x = (left+right)//2-w['client']['x']
         y = (top+bottom)//2-w['client']['y']
-        self.point({'x': x, 'y': y}, w)
+        self.point({'x': x, 'y': y}, w, smooth=True)
         self.check_target(w)
         send([mouse(2), mouse(4)])
         return {'ok': True, 'observe_again': True, 'note': 'Clicked element center; verify application outcome.'}
@@ -341,15 +344,30 @@ class Desktop:
         if foreground and U.GetForegroundWindow() != w['hwnd']:
             raise FocusRequired(w['hwnd'])
 
-    def point(self, args, w):
+    def point(self, args, w, smooth=False):
         r = w['client']
         x = integer(args, 'x', 0, r['width']-1) + r['x']
         y = integer(args, 'y', 0, r['height']-1) + r['y']
         hit = U.WindowFromPoint(W.POINT(x, y))
         if not hit or U.GetAncestor(hit, 2) != w['hwnd']:
             raise ValueError('Point is covered by another window; observe again')
-        if not U.SetCursorPos(x, y):
-            raise RuntimeError('Cannot move pointer')
+        def move(px, py):
+            if not U.SetCursorPos(px, py):
+                raise RuntimeError('Cannot move pointer')
+        if smooth:
+            start = W.POINT()
+            if not U.GetCursorPos(C.byref(start)):
+                raise RuntimeError('Cannot read pointer position')
+            def guard():
+                if U.GetAsyncKeyState(27) & 0x8000:
+                    raise RuntimeError('Pointer movement cancelled by Escape')
+                self.check_target(w)
+            animate((start.x, start.y), (x, y), 180, move, guard)
+            hit = U.WindowFromPoint(W.POINT(x, y))
+            if not hit or U.GetAncestor(hit, 2) != w['hwnd']:
+                raise ValueError('Point became covered while moving; observe again')
+        else:
+            move(x, y)
 
     def click(self, args):
         button = args.get('button', 'left')
@@ -357,7 +375,7 @@ class Desktop:
             raise ValueError('button must be left, right or middle')
         count = integer({'count': args.get('count', 1)}, 'count', 1, 2)
         w = self.target(args)
-        self.point(args, w)
+        self.point(args, w, smooth=True)
         down, up = {'left': (2, 4), 'right': (8, 16), 'middle': (32, 64)}[button]
         self.check_target(w)
         send([e for _ in range(count) for e in (mouse(down), mouse(up))])
@@ -399,16 +417,13 @@ class Desktop:
             time.sleep(.05)
             for a, b, length in zip(coordinates, coordinates[1:], lengths):
                 seconds = duration / 1000 * length / total
-                steps = max(1, round(seconds * 60))
-                for i in range(1, steps + 1):
-                    time.sleep(seconds / steps)
+                def guard():
                     if U.GetAsyncKeyState(27) & 0x8000:
                         raise RuntimeError('Drag cancelled by Escape; partial movement may remain')
                     self.check_target(w)
-                    x = round(a[0] + (b[0]-a[0])*i/steps)
-                    y = round(a[1] + (b[1]-a[1])*i/steps)
-                    self.point({'x': x, 'y': y}, w)
-                    moves += 1
+                stats = animate(a, b, seconds*1000,
+                    lambda x, y: self.point({'x': x, 'y': y}, w), guard)
+                moves += stats['frames_sent']
             time.sleep(.05)
         finally:
             if pressed:
@@ -459,15 +474,13 @@ class Desktop:
         self.point({'x': sx, 'y': sy}, source)
         down, up = {'left': (2, 4), 'right': (8, 16), 'middle': (32, 64)}[button]
         attempted = False
-        steps = max(2, round(duration / 1000 * 60))
         try:
             self.check_target(source)
             self.check_target(destination, foreground=False)
             attempted = True
             send([keyboard(code) for code in modifiers] + [mouse(down)])
             pause_checked(pickup)
-            for i in range(1, steps+1):
-                time.sleep(duration / 1000 / steps)
+            def guard():
                 if U.GetAsyncKeyState(27) & 0x8000:
                     raise RuntimeError('Drag cancelled by Escape; partial movement may remain')
                 self.check_target(source, foreground=False)
@@ -475,10 +488,10 @@ class Desktop:
                 if U.GetForegroundWindow() not in (source['hwnd'], destination['hwnd']):
                     raise ValueError('Another window took foreground during drag')
                 visible_destination()
-                x = round(start[0] + (end[0]-start[0])*i/steps)
-                y = round(start[1] + (end[1]-start[1])*i/steps)
+            def move(x, y):
                 if not U.SetCursorPos(x, y):
                     raise RuntimeError('Cannot move pointer during cross-window drag')
+            stats = animate(start, end, duration, move, guard)
             pause_checked(drop)
             self.check_target(destination, foreground=False)
             visible_destination()
@@ -486,6 +499,7 @@ class Desktop:
             if attempted:
                 release_drag(up, modifiers)
         return {'ok': True, 'source_hwnd': source['hwnd'], 'destination_hwnd': destination['hwnd'],
+                'motion': stats,
                 'button_released': True, 'modifiers_released': True, 'observe_again': True,
                 'note': 'Input delivered; inspect destination to verify whether the application accepted the drop.'}
 
@@ -527,10 +541,15 @@ class Desktop:
         if axis not in ('vertical', 'horizontal') or ticks == 0:
             raise ValueError('axis must be vertical/horizontal; ticks must be nonzero')
         w = self.target(args)
-        self.point(args, w)
-        self.check_target(w)
-        send([mouse(0x800 if axis == 'vertical' else 0x1000, ticks * 120)])
-        return {'ok': True, 'hwnd': w['hwnd'], 'observe_again': True}
+        self.point(args, w, smooth=True)
+        for i in range(abs(ticks)):
+            if i:
+                time.sleep(.03)
+            if U.GetAsyncKeyState(27) & 0x8000:
+                raise RuntimeError('Scroll cancelled by Escape; partial scrolling may remain')
+            self.check_target(w)
+            send([mouse(0x800 if axis == 'vertical' else 0x1000, 120 if ticks > 0 else -120)])
+        return {'ok': True, 'hwnd': w['hwnd'], 'wheel_events': abs(ticks), 'observe_again': True}
 
 
 def build_tools(capture, encode, blank):
@@ -567,12 +586,16 @@ def build_tools(capture, encode, blank):
     def handler(method):
         def run(args):
             started = time.monotonic()
+            activity.emit(method)
+            display_state = 'error'
             previous = U.SetThreadDpiAwarenessContext(W.HANDLE(-4))
             try:
                 result = getattr(desktop, method)(args)
                 result['elapsed_ms'] = round((time.monotonic()-started)*1000)
+                display_state = 'done' if result.get('ok') else 'error'
                 return annotate(method, result)
             except FocusRequired as exc:
+                display_state = 'waiting_for_focus'
                 desktop.observations.clear()
                 return {'ok': False, 'status': 'waiting_for_focus', 'hwnd': exc.hwnd,
                         'retry_automatically': False, 'observation_invalidated': True,
@@ -586,6 +609,7 @@ def build_tools(capture, encode, blank):
                         'elapsed_ms': round((time.monotonic()-started)*1000),
                         'next_action': 'Inspect current state before retrying; partial input or clipboard changes may remain.'}
             finally:
+                activity.emit(method, display_state)
                 if previous:
                     U.SetThreadDpiAwarenessContext(previous)
         return run

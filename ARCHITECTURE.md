@@ -1,5 +1,20 @@
 # Architecture: observe, deliver, verify
 
+## Visible activity and motion scheduling (1.9.0)
+
+`activity.py` sends operation/state/time events through a bounded queue to a
+separate native Win32 overlay process. No MCP JSON-RPC output is written by the
+helper. NOACTIVATE and disabled-window styles prevent it from taking focus or
+receiving mouse hits. Native painting keeps text readable despite disabled state.
+The indicator is best-effort and is not used to infer whether an input succeeded.
+
+`motion.py` separates interpolation/timing from Win32 validation and movement
+callbacks. A monotonic absolute schedule prevents per-frame validation cost from
+accumulating into timing drift. Smoothstep easing reduces abrupt acceleration;
+late frames are skipped, but the final point is always emitted. Safety checks
+remain before each delivered point, and exceptions still unwind drag cleanup.
+This intentionally favors target correctness over claiming constant 60 FPS.
+
 Version 1.8.0 makes a critical distinction explicit: successful input injection
 is not successful application behavior. A Windows input API can accept every
 event while the editor transforms Unicode or the destination rejects a drop.

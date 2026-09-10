@@ -9,6 +9,7 @@ import desktop_control as d
 
 class DesktopTests(unittest.TestCase):
     def setUp(self):
+        patch.object(d.activity, 'emit').start()
         self.api = patch.object(d, 'U').start()
         self.addCleanup(patch.stopall)
         self.desktop = d.Desktop(Mock(), Mock(), Mock())
@@ -60,7 +61,7 @@ class DesktopTests(unittest.TestCase):
 
     def test_click_negative_monitor(self):
         self.desktop.click({'observation_id': 'test', 'x': 20, 'y': 30})
-        self.api.SetCursorPos.assert_called_once_with(-480, 130)
+        self.api.SetCursorPos.assert_called_with(-480, 130)
         self.assertEqual(self.api.SendInput.call_args.args[0], 2)
 
     def test_occluded_point(self):
@@ -100,7 +101,8 @@ class DesktopTests(unittest.TestCase):
     def test_scroll_direction(self):
         self.desktop.scroll({'observation_id': 'test', 'x': 2, 'y': 3, 'ticks': -2})
         event = self.api.SendInput.call_args.args[1][0]
-        self.assertEqual(event.payload.mi.mouseData, (-240) & 0xffffffff)
+        self.assertEqual(event.payload.mi.mouseData, (-120) & 0xffffffff)
+        self.assertEqual(self.api.SendInput.call_count, 2)
         self.assertEqual(event.payload.mi.dwFlags, 0x800)
 
     def test_partial_input_release(self):

@@ -2585,7 +2585,7 @@ TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 # ---------------------------------------------------------------------------
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "mimo-desktop", "version": "1.8.0"}
+SERVER_INFO = {"name": "mimo-desktop", "version": "1.9.0"}
 
 
 def rpc_result(id_: Any, result: Any) -> dict[str, Any]:
