@@ -28,8 +28,8 @@ def main():
     g.GetStockObject.restype = W.HANDLE
     # WS_EX_NOACTIVATE | TRANSPARENT | TOOLWINDOW | TOPMOST; WS_DISABLED avoids hit tests.
     hwnd = u.CreateWindowExW(0x08000000|0x20|0x80|0x8, 'STATIC', '',
-        0x80000000|0x08000000|0x00800000|0x1,
-        max(0,u.GetSystemMetrics(0)-350),20,330,82,None,None,None,None)
+        0x80000000|0x08000000|0x1,
+        max(0,u.GetSystemMetrics(0)-344),24,320,88,None,None,None,None)
     if not hwnd:
         return
     u.SendMessageW(hwnd,0x0030,g.GetStockObject(17),1)
@@ -50,12 +50,26 @@ def main():
     g.SetBkMode.argtypes = [W.HDC,C.c_int]
     g.SelectObject.argtypes = [W.HDC,W.HANDLE]
     g.SelectObject.restype = W.HANDLE
+    g.CreateRoundRectRgn.argtypes = [C.c_int]*6
+    g.CreateRoundRectRgn.restype = W.HRGN
+    u.SetWindowRgn.argtypes = [W.HWND,W.HRGN,W.BOOL]
+    region = g.CreateRoundRectRgn(0,0,321,89,24,24)
+    if not u.SetWindowRgn(hwnd,region,True):
+        g.DeleteObject(region)
+    g.CreateFontW.argtypes = [C.c_int]*5+[W.DWORD]*8+[W.LPCWSTR]
+    g.CreateFontW.restype = W.HFONT
+    def font(size, weight):
+        return g.CreateFontW(-size,0,0,0,weight,0,0,0,1,0,0,5,0,'Arial')
+    small_font, main_font = font(12,400), font(16,600)
+    g.Ellipse.argtypes = [W.HDC,C.c_int,C.c_int,C.c_int,C.c_int]
     u.SetWindowLongPtrW.argtypes = [W.HWND,C.c_int,C.c_ssize_t]
     u.SetWindowLongPtrW.restype = C.c_ssize_t
     u.CallWindowProcW.argtypes = [C.c_void_p,W.HWND,W.UINT,W.WPARAM,W.LPARAM]
     u.CallWindowProcW.restype = W.LPARAM
-    display = ['MIMO DESKTOP']
-    brush = g.CreateSolidBrush(0x271811)
+    display = ['Ready', 'Idle', '0.0s', 'running']
+    def rgb(r,g,b):
+        return r | (g<<8) | (b<<16)
+    brush = g.CreateSolidBrush(rgb(25,28,34))
     callback_type = C.WINFUNCTYPE(W.LPARAM,W.HWND,W.UINT,W.WPARAM,W.LPARAM)
     @callback_type
     def paint_proc(window,message,wp,lp):
@@ -65,13 +79,26 @@ def main():
             rect = W.RECT()
             u.GetClientRect(window,C.byref(rect))
             u.FillRect(dc,C.byref(rect),brush)
-            oldfont = g.SelectObject(dc,g.GetStockObject(17))
-            g.SetTextColor(dc,0xF8F8F8)
+            oldfont = g.SelectObject(dc,small_font)
             g.SetBkMode(dc,1)
-            rect.left += 10
-            rect.top += 10
-            rect.right -= 10
-            u.DrawTextW(dc,display[0],-1,C.byref(rect),0x11)
+            def text(value,box,color,face=small_font,align=0):
+                g.SelectObject(dc,face)
+                g.SetTextColor(dc,color)
+                box = W.RECT(*box)
+                u.DrawTextW(dc,value,-1,C.byref(box),0x8024|align)
+            text('mimo  /  desktop',(18,10,250,28),rgb(149,158,174))
+            text(display[0],(18,31,250,54),rgb(241,244,249),main_font)
+            text(display[2],(251,32,302,54),rgb(180,189,202),small_font,2)
+            text(display[1],(18,59,302,77),rgb(149,158,174))
+            accent = {'running':rgb(115,166,255),'done':rgb(112,211,167),
+                      'waiting_for_focus':rgb(239,190,106),'error':rgb(242,132,137)}.get(display[3],rgb(149,158,174))
+            dot = g.CreateSolidBrush(accent)
+            oldbrush = g.SelectObject(dc,dot)
+            oldpen = g.SelectObject(dc,g.GetStockObject(8))
+            g.Ellipse(dc,294,16,301,23)
+            g.SelectObject(dc,oldpen)
+            g.SelectObject(dc,oldbrush)
+            g.DeleteObject(dot)
             g.SelectObject(dc,oldfont)
             if message==0x000F:
                 u.EndPaint(window,C.byref(paint))
@@ -113,12 +140,19 @@ def main():
             if current:
                 state = current['state']
                 elapsed = max(0,(time.monotonic() if state=='running' else current['time'])-started)
-                detail = {'running':'Working... Escape cancels drag',
-                    'waiting_for_focus':'Waiting: select the target window',
-                    'done':'Call complete - verify the result',
-                    'error':'Stopped - inspect before retrying'}.get(state,state)
-                display[0] = f"MIMO DESKTOP\n{current['operation'].replace('_',' ')} | {elapsed:.1f}s\n{detail}"
-                u.SetWindowTextW(hwnd,display[0])
+                operation = current['operation']
+                names = {'drag_between':'Dragging between windows','drag':'Dragging',
+                    'click':'Clicking','click_element':'Selecting a control','observe':'Observing window',
+                    'inspect':'Reading interface','verify_text':'Verifying text','paste_text':'Pasting text',
+                    'type_text':'Typing','press_key':'Pressing keys','scroll':'Scrolling',
+                    'list_windows':'Finding windows','set_window_rect':'Arranging window',
+                    'verify_element':'Checking control'}
+                detail = {'running': 'Working · Esc stops movement' if operation in ('drag','drag_between','click','click_element','scroll') else 'Working…',
+                    'waiting_for_focus':'Select the target window to continue',
+                    'done':'Finished · check the result',
+                    'error':'Needs attention · inspect before retrying'}.get(state,state)
+                display[:] = [names.get(operation,operation.replace('_',' ').capitalize()),detail,f'{elapsed:.1f}s',state]
+                u.SetWindowTextW(hwnd,'MIMO DESKTOP — '+display[0])
                 u.InvalidateRect(hwnd,None,False)
                 u.UpdateWindow(hwnd)
                 if state!='running' and time.monotonic()-changed > (12 if state=='waiting_for_focus' else 3):
@@ -127,7 +161,10 @@ def main():
     finally:
         u.DestroyWindow(hwnd)
         g.DeleteObject(brush)
+        g.DeleteObject(small_font)
+        g.DeleteObject(main_font)
 
 
 if __name__=='__main__':
     main()
+

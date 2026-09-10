@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- Restyle the activity indicator as a compact rounded dark card with human-readable
+  action labels, muted secondary text, right-aligned elapsed time, and state colors.
+- Preserve non-activating/click-through behavior; release custom fonts and brushes.
+
 ## 1.9.0
 
 - Add a visible native activity badge with operation, elapsed time, completion/error/focus-wait states.
