@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.2
+
+- Refine the activity badge into a rounded charcoal capsule with an animated
+  activity orbit, action subtitle, subtle outline, and separate timer chip.
+- Animate only while a desktop tool is running; preserve focus-wait/error colors.
+- Avoid default STATIC text repainting over the custom renderer.
+
 ## 1.9.1
 
 - Restyle the activity indicator as a compact rounded dark card with human-readable

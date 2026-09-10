@@ -2,6 +2,7 @@
 import ctypes as C
 from ctypes import wintypes as W
 import json
+import math
 import queue
 import sys
 import threading
@@ -27,9 +28,9 @@ def main():
     g.GetStockObject.argtypes = [C.c_int]
     g.GetStockObject.restype = W.HANDLE
     # WS_EX_NOACTIVATE | TRANSPARENT | TOOLWINDOW | TOPMOST; WS_DISABLED avoids hit tests.
-    hwnd = u.CreateWindowExW(0x08000000|0x20|0x80|0x8, 'STATIC', '',
+    hwnd = u.CreateWindowExW(0x08000000|0x20|0x80|0x8, 'STATIC', 'MIMO DESKTOP',
         0x80000000|0x08000000|0x1,
-        max(0,u.GetSystemMetrics(0)-344),24,320,88,None,None,None,None)
+        max(0,u.GetSystemMetrics(0)-464),24,440,82,None,None,None,None)
     if not hwnd:
         return
     u.SendMessageW(hwnd,0x0030,g.GetStockObject(17),1)
@@ -53,7 +54,7 @@ def main():
     g.CreateRoundRectRgn.argtypes = [C.c_int]*6
     g.CreateRoundRectRgn.restype = W.HRGN
     u.SetWindowRgn.argtypes = [W.HWND,W.HRGN,W.BOOL]
-    region = g.CreateRoundRectRgn(0,0,321,89,24,24)
+    region = g.CreateRoundRectRgn(0,0,441,83,40,40)
     if not u.SetWindowRgn(hwnd,region,True):
         g.DeleteObject(region)
     g.CreateFontW.argtypes = [C.c_int]*5+[W.DWORD]*8+[W.LPCWSTR]
@@ -62,6 +63,9 @@ def main():
         return g.CreateFontW(-size,0,0,0,weight,0,0,0,1,0,0,5,0,'Arial')
     small_font, main_font = font(12,400), font(16,600)
     g.Ellipse.argtypes = [W.HDC,C.c_int,C.c_int,C.c_int,C.c_int]
+    g.RoundRect.argtypes = [W.HDC,C.c_int,C.c_int,C.c_int,C.c_int,C.c_int,C.c_int]
+    g.CreatePen.argtypes = [C.c_int,C.c_int,W.DWORD]
+    g.CreatePen.restype = W.HPEN
     u.SetWindowLongPtrW.argtypes = [W.HWND,C.c_int,C.c_ssize_t]
     u.SetWindowLongPtrW.restype = C.c_ssize_t
     u.CallWindowProcW.argtypes = [C.c_void_p,W.HWND,W.UINT,W.WPARAM,W.LPARAM]
@@ -69,7 +73,7 @@ def main():
     display = ['Ready', 'Idle', '0.0s', 'running']
     def rgb(r,g,b):
         return r | (g<<8) | (b<<16)
-    brush = g.CreateSolidBrush(rgb(25,28,34))
+    brush = g.CreateSolidBrush(rgb(27,28,30))
     callback_type = C.WINFUNCTYPE(W.LPARAM,W.HWND,W.UINT,W.WPARAM,W.LPARAM)
     @callback_type
     def paint_proc(window,message,wp,lp):
@@ -86,19 +90,41 @@ def main():
                 g.SetTextColor(dc,color)
                 box = W.RECT(*box)
                 u.DrawTextW(dc,value,-1,C.byref(box),0x8024|align)
-            text('mimo  /  desktop',(18,10,250,28),rgb(149,158,174))
-            text(display[0],(18,31,250,54),rgb(241,244,249),main_font)
-            text(display[2],(251,32,302,54),rgb(180,189,202),small_font,2)
-            text(display[1],(18,59,302,77),rgb(149,158,174))
-            accent = {'running':rgb(115,166,255),'done':rgb(112,211,167),
-                      'waiting_for_focus':rgb(239,190,106),'error':rgb(242,132,137)}.get(display[3],rgb(149,158,174))
-            dot = g.CreateSolidBrush(accent)
-            oldbrush = g.SelectObject(dc,dot)
+            border = g.CreatePen(0,1,rgb(61,63,67))
+            oldpen = g.SelectObject(dc,border)
+            oldbrush = g.SelectObject(dc,brush)
+            g.RoundRect(dc,0,0,440,82,40,40)
+            g.SelectObject(dc,oldpen)
+            g.DeleteObject(border)
+            titles = {'running':'Working on your desktop', 'done':'Action complete',
+                      'waiting_for_focus':'Your turn', 'error':'Needs attention'}
+            subtitle = display[0] if display[3]=='running' else display[1]
+            text(titles.get(display[3],'Mimo Desktop'),(76,17,354,41),rgb(244,244,245),main_font)
+            text(subtitle,(76,43,354,64),rgb(158,160,166))
+            timerbrush = g.CreateSolidBrush(rgb(42,43,47))
+            g.SelectObject(dc,timerbrush)
             oldpen = g.SelectObject(dc,g.GetStockObject(8))
-            g.Ellipse(dc,294,16,301,23)
+            g.RoundRect(dc,366,26,423,56,16,16)
+            g.SelectObject(dc,brush)
+            g.DeleteObject(timerbrush)
+            text(display[2],(370,28,419,54),rgb(211,213,218),small_font,1)
+            # Quiet orbit, animated only while an operation is actually running.
+            palette = {'running':(224,236,235),'done':(112,211,167),
+                       'waiting_for_focus':(239,190,106),'error':(242,132,137)}
+            base = palette.get(display[3],(170,174,182))
+            phase = time.monotonic()*2.2 if display[3]=='running' else 0
+            for i in range(10):
+                angle = math.tau*i/10
+                light = .32 + .68*(.5+.5*math.cos(angle-phase))
+                color = rgb(*(round(28+(channel-28)*light) for channel in base))
+                dot = g.CreateSolidBrush(color)
+                g.SelectObject(dc,dot)
+                x,y = round(39+15*math.cos(angle)),round(41+15*math.sin(angle))
+                g.Ellipse(dc,x-3,y-3,x+4,y+4)
+                g.SelectObject(dc,brush)
+                g.DeleteObject(dot)
             g.SelectObject(dc,oldpen)
             g.SelectObject(dc,oldbrush)
-            g.DeleteObject(dot)
             g.SelectObject(dc,oldfont)
             if message==0x000F:
                 u.EndPaint(window,C.byref(paint))
@@ -152,7 +178,6 @@ def main():
                     'done':'Finished · check the result',
                     'error':'Needs attention · inspect before retrying'}.get(state,state)
                 display[:] = [names.get(operation,operation.replace('_',' ').capitalize()),detail,f'{elapsed:.1f}s',state]
-                u.SetWindowTextW(hwnd,'MIMO DESKTOP — '+display[0])
                 u.InvalidateRect(hwnd,None,False)
                 u.UpdateWindow(hwnd)
                 if state!='running' and time.monotonic()-changed > (12 if state=='waiting_for_focus' else 3):
