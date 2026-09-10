@@ -230,6 +230,28 @@ class DesktopTests(unittest.TestCase):
                 self.desktop.drag(self.drag_args(modifiers=value))
         self.api.SendInput.assert_not_called()
 
+    @patch.object(d, 'set_clipboard_text')
+    def test_explicit_clipboard_typing(self, clipboard):
+        text = 'ทดสอบ mimo-desktop สำเร็จ'
+        result = self.desktop.type_text({'observation_id': 'test', 'text': text, 'method': 'clipboard'})
+        clipboard.assert_called_once_with(text)
+        self.assertTrue(result['clipboard_replaced'])
+        batch = self.api.SendInput.call_args.args[1]
+        self.assertEqual([batch[i].payload.ki.vk for i in range(4)], [17, 86, 86, 17])
+
+    @patch.object(d, 'set_clipboard_text', side_effect=RuntimeError('busy'))
+    def test_clipboard_failure_never_pastes(self, clipboard):
+        with self.assertRaises(RuntimeError):
+            self.desktop.type_text({'observation_id': 'test', 'text': 'abc', 'method': 'clipboard'})
+        self.api.SendInput.assert_not_called()
+
+    @patch.object(d, 'set_clipboard_text')
+    def test_clipboard_focus_change_never_pastes(self, clipboard):
+        self.api.GetForegroundWindow.side_effect = [10, 99]
+        with self.assertRaises(ValueError):
+            self.desktop.type_text({'observation_id': 'test', 'text': 'abc', 'method': 'clipboard'})
+        self.api.SendInput.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -9,6 +9,7 @@ import ctypes as C
 from ctypes import wintypes as W
 import secrets
 import time
+from clipboard_text import set_text as set_clipboard_text
 
 U = C.WinDLL('user32', use_last_error=True)
 K = C.WinDLL('kernel32', use_last_error=True)
@@ -371,17 +372,29 @@ class Desktop:
                 'note': 'Input delivered; inspect destination to verify whether the application accepted the drop.'}
 
     def type_text(self, args):
+        method = args.get('method', 'unicode')
+        if method not in ('unicode', 'clipboard'):
+            raise ValueError('method must be unicode or clipboard')
         text = args.get('text')
         if not isinstance(text, str) or not 1 <= len(text) <= 2000 or any(ord(c) < 32 for c in text):
             raise ValueError('text must contain 1..2000 printable characters; use desktop_press_key for Enter/Tab')
         raw = text.encode('utf-16-le')
         w = self.target(args)
+        if method == 'clipboard':
+            set_clipboard_text(text)
+            # Clipboard contention may have taken time; never paste to a new foreground.
+            self.check_target(w)
+            send(key_events('Ctrl+V'))
+            return {'ok': True, 'characters': len(text), 'hwnd': w['hwnd'],
+                    'method': method, 'clipboard_replaced': True, 'observe_again': True,
+                    'note': 'Paste requested; verify application text. Clipboard retains the supplied text.'}
         events = []
         for i in range(0, len(raw), 2):
             unit = int.from_bytes(raw[i:i+2], 'little')
             events.extend((keyboard(scan=unit, flags=4), keyboard(scan=unit, flags=6)))
         send(events)
-        return {'ok': True, 'characters': len(text), 'hwnd': w['hwnd'], 'observe_again': True}
+        return {'ok': True, 'characters': len(text), 'hwnd': w['hwnd'], 'method': method,
+                'observe_again': True, 'note': 'Unicode events sent; inspect text for app/IME conversion.'}
 
     def press_key(self, args):
         events = key_events(args.get('key'))
@@ -410,7 +423,7 @@ def build_tools(capture, encode, blank):
         ('observe', 'Capture a selected window client area. Returns image and one-use observation_id valid for 60 seconds. Use focus=true before input. Inspect image before acting.', {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
         ('click', 'Click physical client-image coordinates from the latest observation. Reobserve after every action.', {**token, **xy, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'count': {'type': 'integer', 'minimum': 1, 'maximum': 2}}, ['observation_id', 'x', 'y']),
         ('drag', 'Drag inside the observed window client image, optionally through via points. Supports left/right/middle. Smooth movement, Escape cancellation, foreground/geometry checks throughout, and button release on failure. Partial movement can remain on failure; observe again, never blindly retry. Does not support cross-window dragging.', {**token, **{k: {'type': 'integer', 'minimum': 0} for k in ('from_x', 'from_y', 'to_x', 'to_y')}, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'duration_ms': {'type': 'integer', 'minimum': 100, 'maximum': 10000, 'default': 800}, 'via': {'type': 'array', 'maxItems': 64, 'items': {'type': 'object', 'properties': xy, 'required': ['x', 'y'], 'additionalProperties': False}}}, ['observation_id', 'from_x', 'from_y', 'to_x', 'to_y']),
-        ('type_text', 'Type literal Unicode into the currently focused editor. First click the intended editor and observe its focus. Does not use clipboard. Reobserve afterwards.', {**token, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, ['observation_id', 'text']),
+        ('type_text', 'Type into the focused editor. Default unicode uses key events; explicit method=clipboard replaces clipboard and requests Ctrl+V for apps/IMEs that mis-map text. First click the editor and observe. Inspect text afterwards; success means input delivered, not text verified.', {**token, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, ['observation_id', 'text']),
         ('press_key', 'Press a key or chord, e.g. Ctrl+A, Enter, Tab, Escape, Alt+F4. May submit or close; follow user intent and inspect current focus first.', {**token, 'key': {'type': 'string'}}, ['observation_id', 'key']),
         ('scroll', 'Scroll at client-image x/y. Positive ticks scroll up (vertical) or right (horizontal). One tick is 120 Windows wheel units.', {**token, **xy, 'ticks': {'type': 'integer', 'minimum': -20, 'maximum': 20}, 'axis': {'type': 'string', 'enum': ['vertical', 'horizontal']}}, ['observation_id', 'x', 'y', 'ticks']),
     ]
@@ -422,6 +435,9 @@ def build_tools(capture, encode, blank):
                 'description': 'Keep up to 7 other recent window observations for cross-window drag; same-window observations are replaced.'}
         if name == 'drag':
             props['modifiers'] = modifier_schema
+        if name == 'type_text':
+            props['method'] = {'type': 'string', 'enum': ['unicode', 'clipboard'], 'default': 'unicode',
+                'description': 'unicode sends key events. clipboard explicitly replaces clipboard contents and sends Ctrl+V; text remains on clipboard. Use for app/IME mis-mapping only after selecting the incorrect text and observing again; never blindly append a retry.'}
     specs.append(('drag_between',
         'Drag between two observed windows. First observe destination, then observe source with focus=true and retain_previous=true. Inspect both images. from_x/y are source client pixels, to_x/y destination client pixels. Both endpoints must be visible. Straight screen path can hover over other windows. Ctrl/Shift/Alt alter app-specific drop behavior. Escape cancels; partial effects can remain. Verify the drop with another observation.',
         {**token, 'destination_observation_id': {'type': 'string'},

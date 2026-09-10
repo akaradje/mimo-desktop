@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1
+
+- Add explicit `method: clipboard` to text entry for application/IME Unicode mis-mapping.
+- Keep key-event typing as the default; clipboard mode replaces and retains clipboard text.
+- Recheck foreground after clipboard access, and do not paste after clipboard errors.
+- Add regression coverage for mixed Thai/Latin encoding and clipboard resource cleanup.
+- Document fresh-observation recovery for focus changes and consumed/expired IDs.
+
 ## 1.6.0
 
 - Add cross-window dragging with two observed window IDs.

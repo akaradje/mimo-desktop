@@ -180,6 +180,32 @@ for control keys such as `Enter` or `Tab`; typing literal text does not submit i
 Supported chords include `Ctrl+A`, `Ctrl+Shift+S`, and `Alt+F4`. Their effects depend
 on the focused application and keyboard layout.
 
+#### Mixed-script text and IME recovery (1.6.1)
+
+Some applications or active IMEs can transform Unicode input events. If the
+observed text is incorrect, select the incorrect text first, observe again, then
+request explicit clipboard mode:
+
+```json
+{
+  "observation_id": "<fresh ID after selecting the incorrect text>",
+  "text": "ทดสอบ mimo-desktop สำเร็จ",
+  "method": "clipboard"
+}
+```
+
+This replaces the clipboard with the supplied Unicode text and sends Ctrl+V.
+The text remains on the clipboard; previous contents are not restored because
+applications may consume a paste asynchronously. Default `method: unicode` does
+not modify the clipboard. There is no automatic fallback that could duplicate
+already-entered text. Inspect the result; neither mode verifies editor contents.
+
+`Target is not foreground` means no input should be retried until a fresh
+`desktop_observe` with `focus: true` succeeds. `Observation expired or already
+used` means capture again and use the new ID. Each action consumes its ID,
+including an attempted action that later fails validation. Do not reuse the ID
+from a click to type, or the ID from Ctrl+A to paste.
+
 ### Drag inside a window
 
 Use `desktop_drag` after inspecting the source image:
@@ -320,11 +346,11 @@ tested at the stdio contract level; it is not a claim of certification across ho
 ### Local tests without desktop input
 
 ```powershell
-& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body
+& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
-The first command covers **31 cases**, including stale observations, occlusion,
+The first command covers **37 cases**, including stale observations, occlusion,
 Unicode input construction, drag cleanup, modifiers, and HTTP response bounds.
 The second covers **13 SSE scenarios** using a local fixture server.
 
