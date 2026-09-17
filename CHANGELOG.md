@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.11.3
+
+- Retry a provider timeout once on a fresh worker. A cold or busy UI Automation
+  provider can exceed the eight-second deadline on the first contact and answer
+  quickly afterwards — a Chromium window that is re-rendering is the live case — so a
+  single attempt turned a transient stall into a hard failure. The timed-out worker is
+  discarded and a read mutates nothing, so the retry cannot duplicate an action; this
+  is the read-only exception the never-retry rule already allowed. The result reports
+  `retried: true` so the doubled worst-case latency is never silent.
+- The retry is bounded at two attempts and applies only to a timeout. A provider
+  error, an invalid response, and a dead worker are still reported immediately, and
+  `desktop_wait_for`'s `element_present` passes `retry_on_timeout=False` because it
+  already polls — nesting a retry there would multiply the wait instead of bounding it.
+- `uia_reader.ProviderTimeout` names the timeout case explicitly. It subclasses
+  `RuntimeError`, so existing handlers are unaffected.
+- Fix a stale comment in `desktop_wait_for`: it claimed each provider call spawns an
+  isolated worker, which stopped being true when the worker became long-lived (1.10.0).
+- 112 unit tests.
+
 ## 1.11.2
 
 - Keep a failed tool call machine-readable. The desktop handlers return a structured

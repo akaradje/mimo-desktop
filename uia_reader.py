@@ -4,6 +4,9 @@ The worker is reused so a warm provider is not rebuilt for every call. A stuck o
 dead worker is discarded instead of reused, so a wedged provider cannot poison
 later calls. Requests are serialized: the coordinator is single-threaded, and this
 module does not add concurrency on top of it.
+
+A timed-out read is retried once on a fresh worker (see read_ui). Injected input is
+never retried; only reads, which cannot duplicate an action.
 """
 import atexit
 import json
@@ -15,6 +18,15 @@ import threading
 
 DEFAULT_TIMEOUT = 8.0
 GRACE_SECONDS = 0.5
+
+
+class ProviderTimeout(RuntimeError):
+    """The provider did not answer within the deadline.
+
+    Distinct from the other transport failures because a timed-out read has no side
+    effects to undo: the worker has no mutation commands. That is what makes one
+    bounded retry safe here, unlike injected input.
+    """
 
 
 class UiaWorker:
@@ -95,8 +107,8 @@ class UiaWorker:
         try:
             line = self.lines.get(timeout=self.timeout)
         except queue.Empty:
-            raise RuntimeError(f'UI Automation timed out after {self.timeout:g} seconds; '
-                               'provider may be unresponsive')
+            raise ProviderTimeout(f'UI Automation timed out after {self.timeout:g} seconds; '
+                                  'provider may be unresponsive')
         if line is None:
             raise RuntimeError('UI Automation worker failed; check pywinauto installation')
         try:
@@ -132,15 +144,34 @@ def _shutdown():
     _discard()
 
 
-def read_ui(hwnd, verification=None):
-    """Read-only UIA request. Transport failures discard the worker, never retry it."""
-    worker = _acquire()
-    try:
-        response = worker.request(hwnd, verification)
-    except Exception:
-        _discard()
-        raise
-    if not response.get('ok'):
-        raise RuntimeError('UI Automation unavailable: ' + str(response.get('error', 'unknown')))
-    response.pop('id', None)
-    return response
+def read_ui(hwnd, verification=None, retry_on_timeout=True):
+    """Read-only UIA request. Transport failures discard the worker, never retry it.
+
+    A timeout is the one bounded exception. It usually means a slow provider rather
+    than a wedged one — a Chromium window that is busy re-rendering is the live case —
+    and because the timed-out worker is discarded and a read mutates nothing, retrying
+    on a fresh worker cannot duplicate an action. The retry is reported as `retried`
+    so the doubled worst-case latency is never silent.
+
+    Callers that poll pass retry_on_timeout=False: they already retry by design, and a
+    nested retry would multiply the wait instead of bounding it.
+    """
+    attempts = 2 if retry_on_timeout else 1
+    for attempt in range(1, attempts + 1):
+        worker = _acquire()
+        try:
+            response = worker.request(hwnd, verification)
+        except ProviderTimeout:
+            _discard()
+            if attempt == attempts:
+                raise
+            continue
+        except Exception:
+            _discard()
+            raise
+        if not response.get('ok'):
+            raise RuntimeError('UI Automation unavailable: ' + str(response.get('error', 'unknown')))
+        response.pop('id', None)
+        if attempt > 1:
+            response['retried'] = True
+        return response

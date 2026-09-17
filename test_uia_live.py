@@ -132,35 +132,62 @@ def main():
             print(f'     verify_text target hwnd={hwnd} control={control["control_type"]} '
                   f'name={control["name"][:40]!r}')
 
-            # inspect with focus=true: verify_text requires the window in front, and the
-            # server tracks FocusRequired per window, so focus must go through the tool.
-            focused = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
-            if focused.get('_isError'):
-                check('verify_text', False, f"focused inspect failed: {focused.get('error')}")
-            else:
+            # verify_text requires the target in front. On a desktop that is in use the
+            # foreground moves under us, so losing focus is reported as SKIP — an
+            # environment condition — while a wrong verdict is a real failure.
+            good, backend, length, blocked = None, None, None, False
+            for attempt in (1, 2):
+                focused = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+                if focused.get('_isError'):
+                    if focused.get('status') == 'waiting_for_focus':
+                        print('SKIP verify_text: could not hold focus; '
+                              'leave the desktop alone for the duration of the run')
+                        blocked = True
+                    else:
+                        check('verify_text', False,
+                              f"focused inspect failed: {focused.get('error')}")
+                    break
                 row = next((r for r in focused.get('elements', [])
                             if r['control_type'] == control['control_type']), None)
                 true_value, backend = read_control_value(hwnd, (control['control_type'],))
                 if row is None or true_value is None:
                     print('SKIP verify_text: could not resolve the control or its value')
-                else:
-                    good = call('desktop_verify_text', {'observation_id': focused['observation_id'],
-                                                        'element_index': row['element_index'],
-                                                        'expected_text': true_value})
-                    check('verify_text match', good.get('verification') == 'verified'
-                          and good.get('matched') is True,
-                          f'backend={good.get("backend")} read={backend} len={good.get("actual_length")}')
+                    break
+                length = len(true_value)
+                good = call('desktop_verify_text', {'observation_id': focused['observation_id'],
+                                                   'element_index': row['element_index'],
+                                                   'expected_text': true_value})
+                if good.get('verification') == 'verified':
+                    break
+                if good.get('status') == 'waiting_for_focus':
+                    print('SKIP verify_text: focus was lost mid-call; desktop in use')
+                    blocked = True
+                    break
+                # The text can change between the out-of-band read and the provider call
+                # (a live editor is the obvious case), so re-read before blaming anyone.
+                print(f'     attempt {attempt} did not verify; re-reading the target')
+            if good is not None and not blocked:
+                check('verify_text match', good.get('verification') == 'verified'
+                      and good.get('matched') is True,
+                      f'backend={good.get("backend")} read={backend} len={length}')
 
-                    again = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+                again = call('desktop_inspect', {'hwnd': hwnd, 'focus': True})
+                if again.get('_isError'):
+                    print('SKIP verify_text mismatch: focus lost before the negative check')
+                else:
                     row2 = next((r for r in again.get('elements', [])
                                  if r['control_type'] == control['control_type']), None)
                     if row2 is not None:
                         bad = call('desktop_verify_text', {'observation_id': again['observation_id'],
                                                            'element_index': row2['element_index'],
                                                            'expected_text': ABSENT_NAME})
-                        check('verify_text mismatch', bad.get('verification') == 'mismatch'
-                              and bad.get('matched') is False,
-                              f'verification={bad.get("verification")} matched={bad.get("matched")}')
+                        if bad.get('status') == 'waiting_for_focus':
+                            print('SKIP verify_text mismatch: focus lost mid-call')
+                        else:
+                            check('verify_text mismatch', bad.get('verification') == 'mismatch'
+                                  and bad.get('matched') is False,
+                                  f'verification={bad.get("verification")} '
+                                  f'matched={bad.get("matched")}')
     except Exception as exc:
         print(f'FAIL {type(exc).__name__}: {ascii(str(exc))}')
         failures.append(type(exc).__name__)

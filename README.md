@@ -555,6 +555,12 @@ in front, so the window that was in front is restored on exit. Pass
 `--hwnd N` to choose the text target; otherwise it scans visible windows for the
 first `Edit` or `Document` control.
 
+**Leave the desktop alone while it runs.** `desktop_verify_text` enforces focus,
+and Windows will not let a background process take the foreground while someone is
+using the machine. When focus cannot be held the test reports
+`SKIP verify_text: could not hold focus` and still exits 0 — that is an environment
+condition, not a product failure. A wrong verdict is reported as FAIL.
+
 ### Live MiMo checks
 
 ```powershell

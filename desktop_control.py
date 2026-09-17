@@ -386,7 +386,9 @@ class Desktop:
                     raise ValueError(f'{key} must be a string of 1..500 characters')
 
             def check():
-                rows = read_ui(hwnd)['elements']
+                # Polling already retries, so do not nest the reader's timeout retry:
+                # it would multiply the wait instead of bounding it.
+                rows = read_ui(hwnd, retry_on_timeout=False)['elements']
                 for row in rows:
                     name = row['name']
                     if contains is not None:
@@ -406,7 +408,8 @@ class Desktop:
         timeout = integer({'timeout_ms': args.get('timeout_ms', 5000)}, 'timeout_ms', 100, 30000)
         interval = integer({'interval_ms': args.get('interval_ms', 250)}, 'interval_ms', 50, 2000)
         if condition == 'element_present':
-            # Each provider call spawns an isolated worker; avoid hammering it.
+            # One long-lived worker is reused across attempts (1.10.0); the floor keeps
+            # the provider from being hammered rather than avoiding a respawn.
             interval = max(interval, 500)
         started = time.monotonic()
         attempts = 0

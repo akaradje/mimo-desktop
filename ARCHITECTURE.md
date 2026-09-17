@@ -130,6 +130,15 @@ Discarding is safe because that worker has no mutation commands. An operation ca
 perform more than one provider call, so this is not an eight-second overall tool
 deadline.
 
+A timeout is the one case that is retried (1.11.3), and only once. A cold or busy
+provider often stalls on first contact and answers quickly afterwards, so a single
+attempt turned a transient stall into a hard failure. The retry is safe for exactly
+the reason discarding is: the timed-out worker had no mutation commands, so a second
+read cannot duplicate an action. It is bounded at two attempts, applies to a timeout
+only, and is reported as `retried: true`. Polling callers opt out, because they
+already retry by design and a nested retry would multiply the wait rather than bound
+it.
+
 ## Waiting is not acting (1.10.0)
 
 `desktop_wait_for` polls a read-only predicate — a visible window title, a vanished

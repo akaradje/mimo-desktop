@@ -109,15 +109,59 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual([call[0] for call in FakeWorker.instances[0].requests], [10, 20])
 
     def test_failed_worker_is_discarded_and_replaced(self):
+        # A non-timeout transport failure is not retried, only discarded.
         FakeWorker.script = [
-            RuntimeError('UI Automation timed out after 8 seconds; provider may be unresponsive'),
+            RuntimeError('UI Automation worker failed; check pywinauto installation'),
             {'ok': True, 'elements': []}]
-        with self.assertRaisesRegex(RuntimeError, 'timed out'):
+        with self.assertRaisesRegex(RuntimeError, 'worker failed'):
             uia_reader.read_ui(10)
         self.assertTrue(FakeWorker.instances[0].stopped)
         self.assertIsNone(uia_reader._worker)
         uia_reader.read_ui(10)
         self.assertEqual(len(FakeWorker.instances), 2)
+
+    def test_provider_timeout_is_a_runtime_error(self):
+        # The handlers catch RuntimeError, so the timeout type must not escape them.
+        self.assertTrue(issubclass(uia_reader.ProviderTimeout, RuntimeError))
+
+    def test_timeout_is_retried_once_on_a_fresh_worker(self):
+        FakeWorker.script = [uia_reader.ProviderTimeout('UI Automation timed out'),
+                             {'ok': True, 'elements': [{'name': 'Recovered'}]}]
+        result = uia_reader.read_ui(10)
+        self.assertEqual(result['elements'], [{'name': 'Recovered'}])
+        self.assertIs(result.get('retried'), True)
+        # The timed-out worker is discarded before the retry, never reused.
+        self.assertEqual(len(FakeWorker.instances), 2)
+        self.assertTrue(FakeWorker.instances[0].stopped)
+        self.assertFalse(FakeWorker.instances[1].stopped)
+
+    def test_timeout_retry_is_bounded(self):
+        FakeWorker.script = [uia_reader.ProviderTimeout('UI Automation timed out'),
+                             uia_reader.ProviderTimeout('UI Automation timed out'),
+                             {'ok': True, 'elements': []}]
+        with self.assertRaisesRegex(uia_reader.ProviderTimeout, 'timed out'):
+            uia_reader.read_ui(10)
+        # Exactly two attempts: the third scripted response must never be consumed.
+        self.assertEqual(len(FakeWorker.instances), 2)
+        self.assertEqual(FakeWorker.script, [{'ok': True, 'elements': []}])
+
+    def test_polling_can_disable_the_timeout_retry(self):
+        FakeWorker.script = [uia_reader.ProviderTimeout('UI Automation timed out')]
+        with self.assertRaisesRegex(uia_reader.ProviderTimeout, 'timed out'):
+            uia_reader.read_ui(10, retry_on_timeout=False)
+        self.assertEqual(len(FakeWorker.instances), 1)
+
+    def test_successful_first_attempt_is_not_flagged_as_retried(self):
+        FakeWorker.script = [{'ok': True, 'elements': []}]
+        self.assertNotIn('retried', uia_reader.read_ui(10))
+
+    def test_provider_error_is_not_retried(self):
+        FakeWorker.script = [{'ok': False, 'error': 'provider unavailable'},
+                             {'ok': True, 'elements': []}]
+        with self.assertRaisesRegex(RuntimeError, 'provider unavailable'):
+            uia_reader.read_ui(10)
+        self.assertEqual(len(FakeWorker.instances), 1)
+        self.assertEqual(len(FakeWorker.instances[0].requests), 1)
 
     def test_provider_error_keeps_the_worker(self):
         FakeWorker.script = [{'ok': False, 'error': 'provider unavailable'}]
