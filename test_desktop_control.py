@@ -21,6 +21,20 @@ class DesktopTests(unittest.TestCase):
         self.api.WindowFromPoint.return_value = 10
         self.api.GetAncestor.return_value = 10
         self.api.SendInput.side_effect = lambda count, *_: count
+        # The pointer readback needs a cursor that actually moves, otherwise every
+        # click would look like a clamped point.
+        self.cursor = {'x': 0, 'y': 0}
+
+        def set_cursor(x, y):
+            self.cursor.update(x=x, y=y)
+            return True
+
+        def get_cursor(pointer):
+            pointer._obj.x, pointer._obj.y = self.cursor['x'], self.cursor['y']
+            return True
+
+        self.api.SetCursorPos.side_effect = set_cursor
+        self.api.GetCursorPos.side_effect = get_cursor
         self.token()
 
     def token(self, age=0):
@@ -141,7 +155,16 @@ class DesktopTests(unittest.TestCase):
 
     @patch.object(d.time, 'sleep')
     def test_drag_pointer_failure_releases(self, _sleep):
-        self.api.SetCursorPos.side_effect = [True, False]
+        calls = {'count': 0}
+
+        def set_cursor(x, y):
+            calls['count'] += 1
+            if calls['count'] == 1:      # the initial positioning succeeds
+                self.cursor.update(x=x, y=y)
+                return True
+            return False                 # the desktop refuses to move mid-drag
+
+        self.api.SetCursorPos.side_effect = set_cursor
         with self.assertRaisesRegex(RuntimeError, 'pointer'):
             self.desktop.drag(self.drag_args(button='right'))
         self.assertEqual(self.api.SendInput.call_args.args[1][0].payload.mi.dwFlags, 16)
@@ -444,6 +467,59 @@ class DesktopTests(unittest.TestCase):
             result = tool['handler']({'condition': 'window_gone', 'hwnd': 10})
         self.assertEqual(result['outcome'], 'condition_not_met')
 
+    def test_move_pointer_reports_a_refused_move(self):
+        self.api.SetCursorPos.side_effect = None
+        self.api.SetCursorPos.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'Cannot move pointer'):
+            d.move_pointer(10, 20)
+
+    def test_move_pointer_reports_an_unreadable_position(self):
+        self.api.GetCursorPos.side_effect = None
+        self.api.GetCursorPos.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'Cannot read pointer position'):
+            d.move_pointer(10, 20)
+
+    def test_move_pointer_rejects_a_clamped_point(self):
+        # SetCursorPos succeeds even when the desktop clamps the point, so the
+        # readback is the only thing standing between a clamp and a wrong click.
+        self.api.SetCursorPos.side_effect = None
+        self.api.SetCursorPos.return_value = True
+        self.cursor.update(x=0, y=0)
+        with self.assertRaisesRegex(RuntimeError, r'did not land at \(10, 20\)'):
+            d.move_pointer(10, 20)
+
+    def test_click_never_fires_on_a_clamped_pointer(self):
+        self.api.SetCursorPos.side_effect = None
+        self.api.SetCursorPos.return_value = True
+        self.cursor.update(x=0, y=0)
+        with self.assertRaisesRegex(RuntimeError, 'did not land'):
+            self.desktop.click({'observation_id': 'test', 'x': 20, 'y': 30})
+        self.api.SendInput.assert_not_called()
+
+    def test_element_click_prefers_the_provider_click_point(self):
+        row = self.element_setup()
+        row['clickable_point'] = [-450, 130]
+        with patch.object(d, 'read_ui', return_value={'elements': [dict(row)]}):
+            result = self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SetCursorPos.assert_called_with(-450, 130)
+        self.assertEqual(result['click_point'], 'provider')
+
+    def test_element_click_falls_back_to_the_rectangle_centre(self):
+        row = self.element_setup()
+        row['clickable_point'] = None
+        with patch.object(d, 'read_ui', return_value={'elements': [dict(row)]}):
+            result = self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SetCursorPos.assert_called_with(-430, 140)
+        self.assertEqual(result['click_point'], 'rectangle_center')
+
+    def test_element_click_point_outside_the_client_area_is_rejected(self):
+        row = self.element_setup()
+        row['clickable_point'] = [-900, 130]
+        with patch.object(d, 'read_ui', return_value={'elements': [dict(row)]}), \
+                self.assertRaisesRegex(ValueError, 'outside the visible client area'):
+            self.desktop.click_element({'observation_id': 'test', 'element_index': 0})
+        self.api.SendInput.assert_not_called()
+
     def element_setup(self):
         row = {'runtime_id': [1, 2], 'name': 'Button', 'control_type': 'Button',
                'automation_id': 'test', 'enabled': True, 'visible': True,
@@ -527,6 +603,36 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.desktop.drag_between(args)
         self.api.SendInput.assert_not_called()
+
+
+class DpiAwarenessTests(unittest.TestCase):
+    """The process-wide context is what keeps capture geometry identical everywhere."""
+
+    def test_the_newest_api_wins(self):
+        with patch.object(d, 'U') as api, patch.object(d.C, 'WinDLL') as win_dll:
+            api.SetProcessDpiAwarenessContext.return_value = True
+            self.assertTrue(d.set_process_dpi_awareness())
+            win_dll.assert_not_called()
+
+    def test_falls_back_to_shcore(self):
+        with patch.object(d, 'U') as api, patch.object(d.C, 'WinDLL') as win_dll:
+            api.SetProcessDpiAwarenessContext.side_effect = AttributeError('missing')
+            win_dll.return_value.SetProcessDpiAwareness.return_value = 0  # S_OK
+            self.assertTrue(d.set_process_dpi_awareness())
+
+    def test_falls_back_to_setprocessdpiaware(self):
+        with patch.object(d, 'U') as api, patch.object(d.C, 'WinDLL') as win_dll:
+            api.SetProcessDpiAwarenessContext.side_effect = AttributeError('missing')
+            win_dll.side_effect = OSError('shcore unavailable')
+            api.SetProcessDPIAware.return_value = True
+            self.assertTrue(d.set_process_dpi_awareness())
+
+    def test_reports_false_when_nothing_is_available(self):
+        with patch.object(d, 'U') as api, patch.object(d.C, 'WinDLL') as win_dll:
+            api.SetProcessDpiAwarenessContext.side_effect = AttributeError('missing')
+            win_dll.side_effect = OSError('shcore unavailable')
+            api.SetProcessDPIAware.side_effect = AttributeError('missing')
+            self.assertFalse(d.set_process_dpi_awareness())
 
 
 if __name__ == '__main__':

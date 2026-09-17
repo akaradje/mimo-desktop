@@ -264,6 +264,21 @@ observation normally clears the old one. `retain_previous: true` keeps up to eig
 distinct window observations for a cross-window gesture. Observing the same window
 replaces its earlier observation; a failed observation clears the cache.
 
+### Precision guarantees
+
+Three checks keep a click on the point that was observed, and all three fail closed —
+an unverified position produces an error, never a click:
+
+- **One coordinate space.** The process is per-monitor DPI aware, so a capture taken
+  outside a tool call reports the same physical geometry as one taken inside it, even
+  on a scaled display.
+- **Verified arrival.** Every pointer move is read back with `GetCursorPos`.
+  `SetCursorPos` reports success even when the desktop clamps the point, so a clamped
+  move raises instead of letting the click land somewhere else.
+- **Real element hit point.** Element clicks use the provider's clickable point when it
+  exposes one, and reject an element whose click point lies outside the visible client
+  area rather than clicking a clamped position.
+
 ### Waiting instead of guessing
 
 `desktop_wait_for` polls a read-only condition, so you do not have to re-observe in a

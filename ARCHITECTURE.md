@@ -42,6 +42,30 @@ actions also revalidate runtime ID, name, control type, automation ID, and bound
 These are freshness checks, not authentication or a sandbox. The application can
 change between any two calls; Windows does not make screenshots and input atomic.
 
+### Precision and arrival (1.11.0)
+
+Three independent things can move a click off its intended point, and each is now
+checked rather than assumed.
+
+**Coordinate space.** The process sets `PER_MONITOR_AWARE_V2` at import and each tool
+call also sets a per-thread context. Without the process-wide context, a capture taken
+outside a tool call — `mimo_capture_window` is the live example — is virtualized to
+96 DPI, so the same window reports different pixel geometry depending on the caller.
+Setting it once removes that inconsistency; the per-thread set remains for hosts that
+change their own context between calls.
+
+**Arrival.** `SetCursorPos` returns success even when the desktop clamps the point to
+the virtual desktop bounds. A click built on that success would land somewhere else
+while every call in the sequence still looked fine. Every move is therefore read back
+with `GetCursorPos` and compared; a mismatch raises and no button event is sent.
+
+**Element hit point.** A rectangle centre is not always a valid hit point: an overlay
+can cover it, and a partially scrolled element can put it outside the client area.
+Element clicks prefer the provider's `GetClickablePoint` and fall back to the centre,
+and reject a point outside the visible client area with a message that says so.
+
+All three fail closed: an unverified position produces an error, never a click.
+
 ### Delivery adapters
 
 - **Unicode SendInput:** retained for compatibility and apps where it works.

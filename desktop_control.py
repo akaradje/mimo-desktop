@@ -39,6 +39,8 @@ signature(U, 'ShowWindow', W.BOOL, W.HWND, C.c_int)
 signature(U, 'SetForegroundWindow', W.BOOL, W.HWND)
 signature(U, 'SetCursorPos', W.BOOL, C.c_int, C.c_int)
 signature(U, 'GetCursorPos', W.BOOL, C.POINTER(W.POINT))
+signature(U, 'SetProcessDPIAware', W.BOOL)
+signature(U, 'SetProcessDpiAwarenessContext', W.BOOL, W.HANDLE)
 signature(U, 'SetWindowPos', W.BOOL, W.HWND, W.HWND, C.c_int, C.c_int, C.c_int, C.c_int, W.UINT)
 signature(U, 'GetWindowRect', W.BOOL, W.HWND, C.POINTER(W.RECT))
 signature(U, 'GetAsyncKeyState', C.c_short, C.c_int)
@@ -46,6 +48,28 @@ signature(U, 'SetThreadDpiAwarenessContext', W.HANDLE, W.HANDLE)
 signature(K, 'OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)
 signature(K, 'QueryFullProcessImageNameW', W.BOOL, W.HANDLE, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD))
 signature(K, 'CloseHandle', W.BOOL, W.HANDLE)
+
+
+def set_process_dpi_awareness():
+    """Make the whole process per-monitor DPI aware.
+
+    Every tool call also sets a per-thread context, but code that runs outside a
+    tool call (for example the MiMo window capture) would otherwise be virtualized
+    to 96 DPI on a scaled display. That silently changes pixel geometry, so the
+    same window would report different coordinates depending on the caller.
+    """
+    for attempt in (lambda: U.SetProcessDpiAwarenessContext(W.HANDLE(-4)),  # PER_MONITOR_AWARE_V2
+                    lambda: C.WinDLL('shcore').SetProcessDpiAwareness(2) == 0,  # PER_MONITOR_DPI_AWARE
+                    lambda: U.SetProcessDPIAware()):  # pre-1703 fallback
+        try:
+            if attempt():
+                return True
+        except (AttributeError, OSError):
+            continue
+    return False  # Already set, or the OS refused; the per-thread context still applies.
+
+
+PROCESS_DPI_AWARE = set_process_dpi_awareness()
 
 
 class Mouse(C.Structure):
@@ -103,6 +127,23 @@ def send(events):
         if releases:
             U.SendInput(len(releases), (Input * len(releases))(*releases), C.sizeof(Input))
         raise RuntimeError(f'SendInput accepted {sent}/{len(batch)} events; outcome may be partial. Elevated apps may reject input. Observe again.')
+
+
+def move_pointer(x, y):
+    """Move the pointer and confirm it arrived where it was asked to go.
+
+    SetCursorPos reports success even when the desktop clamps the point, so without
+    this readback a click could land somewhere other than the observed target while
+    every call still looked successful.
+    """
+    if not U.SetCursorPos(x, y):
+        raise RuntimeError('Cannot move pointer')
+    landed = W.POINT()
+    if not U.GetCursorPos(C.byref(landed)):
+        raise RuntimeError('Cannot read pointer position after moving')
+    if (landed.x, landed.y) != (x, y):
+        raise RuntimeError(f'Pointer did not land at ({x}, {y}); the desktop reported '
+                           f'({landed.x}, {landed.y}). The point may be outside the desktop bounds.')
 
 
 KEYS = {'enter': 13, 'tab': 9, 'escape': 27, 'space': 32, 'backspace': 8,
@@ -199,12 +240,19 @@ class Desktop:
         left, top, right, bottom = row['rect']
         if right <= left or bottom <= top:
             raise ValueError('Element has no usable click rectangle')
-        x = (left+right)//2-w['client']['x']
-        y = (top+bottom)//2-w['client']['y']
+        # Prefer the provider's clickable point; fall back to the rectangle centre.
+        px, py = row.get('clickable_point') or ((left+right)//2, (top+bottom)//2)
+        x = px-w['client']['x']
+        y = py-w['client']['y']
+        if not (0 <= x < w['client']['width'] and 0 <= y < w['client']['height']):
+            raise ValueError('Element click point is outside the visible client area; '
+                             'scroll it into view and inspect again')
         self.point({'x': x, 'y': y}, w, smooth=True)
         self.check_target(w)
         send([mouse(2), mouse(4)])
-        return {'ok': True, 'observe_again': True, 'note': 'Clicked element center; verify application outcome.'}
+        return {'ok': True, 'observe_again': True,
+                'click_point': 'provider' if row.get('clickable_point') else 'rectangle_center',
+                'note': 'Clicked the element click point; verify application outcome.'}
 
     def verify_element(self, args):
         expected = args.get('expected_name')
@@ -451,8 +499,7 @@ class Desktop:
         if not hit or U.GetAncestor(hit, 2) != w['hwnd']:
             raise ValueError('Point is covered by another window; observe again')
         def move(px, py):
-            if not U.SetCursorPos(px, py):
-                raise RuntimeError('Cannot move pointer')
+            move_pointer(px, py)
         if smooth:
             start = W.POINT()
             if not U.GetCursorPos(C.byref(start)):
@@ -589,8 +636,7 @@ class Desktop:
                     raise ValueError('Another window took foreground during drag')
                 visible_destination()
             def move(x, y):
-                if not U.SetCursorPos(x, y):
-                    raise RuntimeError('Cannot move pointer during cross-window drag')
+                move_pointer(x, y)
             stats = animate(start, end, duration, move, guard)
             pause_checked(drop)
             self.check_target(destination, foreground=False)
@@ -729,7 +775,7 @@ def build_tools(capture, encode, blank):
          {**token, 'element_index': {'type': 'integer', 'minimum': 0}, 'expected_text': {'type': 'string', 'maxLength': 2000}}, ['observation_id', 'element_index', 'expected_text']),
         ('inspect', 'Capture window image and a bounded UI Automation tree. Returns element_index values tied to observation_id. Password controls omitted; names may contain private data. Providers can time out. Reinspect after input.',
          {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
-        ('click_element', 'Revalidate an element from desktop_inspect then click its center. Rejects changed identity/name/rectangle, disabled, offscreen, or covered targets. Observe afterwards.',
+        ('click_element', 'Revalidate an element from desktop_inspect, then click the provider clickable point (falling back to the rectangle centre). Rejects changed identity/name/rectangle, disabled, offscreen or covered targets, and a click point that falls outside the visible client area. Observe afterwards.',
          {**token, 'element_index': {'type': 'integer', 'minimum': 0}}, ['observation_id', 'element_index']),
         ('verify_element', 'Read-only exact UIA Name check of a freshly inspected element. Returns matched, not proof of overall task success. Does not read full editor contents.',
          {**token, 'element_index': {'type': 'integer', 'minimum': 0}, 'expected_name': {'type': 'string', 'maxLength': 500}}, ['observation_id', 'element_index', 'expected_name']),

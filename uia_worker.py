@@ -47,6 +47,13 @@ def inspect(hwnd, verification=None):
                 # Do not inspect names, values, or descendants of password controls.
                 continue
             rect = element.rectangle
+            try:
+                # The provider's own click target accounts for occluding overlays and
+                # for elements whose centre is not a valid hit point.
+                point = raw.GetClickablePoint()
+                clickable = [int(point.x), int(point.y)]
+            except Exception:
+                clickable = None
             identity = list(raw.GetRuntimeId())
             if verification and identity == verification.get('runtime_id'):
                 return verify_text(element, verification['expected_text'])
@@ -54,7 +61,8 @@ def inspect(hwnd, verification=None):
             row = {'runtime_id': identity, 'name': name[:500], 'name_truncated': len(name) > 500,
                    'control_type': element.control_type, 'automation_id': element.automation_id[:500],
                    'enabled': bool(element.enabled), 'visible': bool(element.visible),
-                   'rect': [rect.left, rect.top, rect.right, rect.bottom], 'depth': depth}
+                   'rect': [rect.left, rect.top, rect.right, rect.bottom],
+                   'clickable_point': clickable, 'depth': depth}
             rows.append(row)
             if depth < 8:
                 children = element.children()

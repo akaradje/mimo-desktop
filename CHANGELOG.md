@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.11.0
+
+- Make the whole process per-monitor DPI aware, not just the tool thread. A capture
+  taken outside a tool call — `mimo_capture_window` is the live case — was virtualized
+  to 96 DPI on a scaled display, so the same window reported different pixel geometry
+  depending on which path captured it.
+- Verify every pointer move with a readback. `SetCursorPos` reports success even when
+  the desktop clamps the point, so a click could otherwise land somewhere other than
+  the observed target while every call still looked successful. A clamped or refused
+  move now raises and no button event is sent.
+- Click UI elements at the provider's clickable point when it exposes one, falling back
+  to the rectangle centre. An element whose click point falls outside the visible client
+  area is rejected with a specific error instead of a confusing bounds error.
+- 95 unit tests.
+
 ## 1.10.0
 
 - Add `desktop_wait_for`: read-only polling for `window_visible`, `window_gone`, and
