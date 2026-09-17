@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import uia_reader
+import uia_worker
 
 
 # A stub that speaks the worker's line protocol, so the transport can be tested
@@ -136,6 +138,59 @@ class ReaderTests(unittest.TestCase):
         result = uia_reader.read_ui(10, payload)
         self.assertEqual(FakeWorker.instances[0].requests[0], (10, payload))
         self.assertTrue(result['matched'])
+
+
+class OneShotTests(unittest.TestCase):
+    """The diagnostic entry point must accept the same request shape as serve.
+
+    It previously read hwnd only from argv and forwarded the whole request as the
+    verification payload, so a diagnostic run did not reproduce what the server
+    sends and a missing argument surfaced as 'list index out of range'.
+    """
+
+    def resolve(self, argv, raw):
+        return uia_worker.one_shot(argv, io.BytesIO(raw))
+
+    def test_hwnd_is_accepted_from_json_like_serve(self):
+        hwnd, verification = self.resolve([], b'{"hwnd": 42}')
+        self.assertEqual(hwnd, 42)
+        self.assertIsNone(verification)
+
+    def test_hwnd_is_accepted_positionally(self):
+        hwnd, verification = self.resolve(['99'], b'{}')
+        self.assertEqual(hwnd, 99)
+        self.assertIsNone(verification)
+
+    def test_json_hwnd_wins_over_positional(self):
+        hwnd, _ = self.resolve(['99'], b'{"hwnd": 42}')
+        self.assertEqual(hwnd, 42)
+
+    def test_verification_is_unwrapped_not_the_whole_request(self):
+        payload = {'runtime_id': [1, 2], 'expected_text': 'hi'}
+        request = json.dumps({'hwnd': 7, 'verification': payload}).encode()
+        hwnd, verification = self.resolve([], request)
+        self.assertEqual(hwnd, 7)
+        self.assertEqual(verification, payload)
+
+    def test_missing_hwnd_names_both_forms(self):
+        with self.assertRaises(ValueError) as caught:
+            self.resolve([], b'{}')
+        self.assertIn('stdin', str(caught.exception))
+        self.assertIn('argument', str(caught.exception))
+
+    def test_non_integer_hwnd_is_rejected(self):
+        with self.assertRaises(ValueError) as caught:
+            self.resolve([], b'{"hwnd": "abc"}')
+        self.assertIn('integer', str(caught.exception))
+
+    def test_malformed_json_is_rejected_clearly(self):
+        with self.assertRaises(ValueError) as caught:
+            self.resolve([], b'not json')
+        self.assertIn('JSON', str(caught.exception))
+
+    def test_non_object_request_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.resolve([], b'[1, 2]')
 
 
 if __name__ == '__main__':

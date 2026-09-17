@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.1
+
+- Make the one-shot `uia_worker.py` diagnostic entry point accept the same request
+  shape as `--serve`. It previously read `hwnd` only from `argv[1]` and forwarded the
+  entire request as the verification payload, so a diagnostic run did not reproduce
+  what the server sends. Omitting the argument surfaced as `list index out of range`
+  instead of naming the missing field, and a `{"verification": ...}` payload was
+  passed through unwrapped, which silently reported the target as absent.
+- `hwnd` is now read from `{"hwnd": N}` on stdin, with the positional form still
+  accepted, and a missing or non-integer value reports what is required.
+- 103 unit tests.
+
 ## 1.11.0
 
 - Make the whole process per-monitor DPI aware, not just the tool thread. A capture

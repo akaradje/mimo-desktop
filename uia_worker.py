@@ -101,6 +101,28 @@ def serve(stream_in, stream_out):
         stream_out.flush()
 
 
+def one_shot(argv, stream_in):
+    """Resolve a single diagnostic request from stdin, optionally taking hwnd as argv[1].
+
+    Accepts the same JSON shape as `serve` so a diagnostic run reproduces what the
+    server would send. hwnd may also be given positionally for convenience.
+    """
+    try:
+        request = json.loads(stream_in.read(32768) or b'{}')
+    except ValueError as exc:
+        raise ValueError(f'request must be JSON: {exc}')
+    if not isinstance(request, dict):
+        raise ValueError('request must be a JSON object')
+    hwnd = request.get('hwnd', argv[0] if argv else None)
+    if hwnd is None:
+        raise ValueError('hwnd required, as {"hwnd": N} on stdin or as the first argument')
+    try:
+        hwnd = int(hwnd)
+    except (TypeError, ValueError):
+        raise ValueError(f'hwnd must be an integer, got {hwnd!r}')
+    return hwnd, request.get('verification')
+
+
 if __name__ == '__main__':
     sys.stdout.reconfigure(encoding='utf-8')
     if '--serve' in sys.argv[1:]:
@@ -108,7 +130,7 @@ if __name__ == '__main__':
     else:
         # One-shot mode remains available for manual diagnostics.
         try:
-            request = json.loads(sys.stdin.buffer.read(32768) or b'{}')
-            print(json.dumps({'ok': True, **inspect(int(sys.argv[1]), request)}, ensure_ascii=False))
+            hwnd, verification = one_shot(sys.argv[1:], sys.stdin.buffer)
+            print(json.dumps({'ok': True, **inspect(hwnd, verification)}, ensure_ascii=False))
         except Exception as exc:
             print(json.dumps({'ok': False, 'error': str(exc)}))
