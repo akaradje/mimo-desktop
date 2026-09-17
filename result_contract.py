@@ -12,4 +12,7 @@ def annotate(method, result):
         result['outcome'] = result.get('verification', 'unavailable')
     elif result.get('ok') and method == 'set_window_rect':
         result['outcome'] = 'geometry_verified' if result.get('matched') else 'geometry_mismatch'
+    elif result.get('ok') and method == 'wait_for':
+        # A timeout is a complete, truthful answer: the condition was not observed.
+        result['outcome'] = 'condition_met' if result.get('satisfied') else 'condition_not_met'
     return result

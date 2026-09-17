@@ -316,6 +316,134 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(result['status'], 'waiting_for_focus')
         self.assertFalse(result['retry_automatically'])
 
+    def list_setup(self):
+        windows = {
+            10: {**self.w, 'title': 'Untitled - Notepad', 'path': r'C:\Windows\System32\notepad.exe', 'pid': 20},
+            30: {**self.w, 'hwnd': 30, 'title': 'Documents - File Explorer', 'path': r'C:\Windows\explorer.exe', 'pid': 40},
+            50: {**self.w, 'hwnd': 50, 'title': '', 'path': r'C:\hidden.exe', 'pid': 60},
+        }
+        self.desktop.window.side_effect = lambda hwnd: copy.deepcopy(windows[hwnd])
+
+        def enum(callback, _):
+            for hwnd in windows:
+                callback(hwnd, 0)
+            return 1
+
+        self.api.EnumWindows.side_effect = enum
+        return windows
+
+    def test_list_windows_unfiltered(self):
+        self.list_setup()
+        result = self.desktop.list_windows({})
+        # Untitled windows are still excluded by the pre-existing visibility rule.
+        self.assertEqual([w['hwnd'] for w in result['windows']], [10, 30])
+        self.assertEqual(result['total_visible'], 2)
+        self.assertEqual(result['filters'], {})
+
+    def test_list_windows_filters_are_case_insensitive(self):
+        self.list_setup()
+        self.assertEqual([w['hwnd'] for w in self.desktop.list_windows({'title_contains': 'notepad'})['windows']], [10])
+        self.assertEqual([w['hwnd'] for w in self.desktop.list_windows({'path_contains': 'EXPLORER.EXE'})['windows']], [30])
+        self.assertEqual([w['hwnd'] for w in self.desktop.list_windows({'pid': 20})['windows']], [10])
+
+    def test_list_windows_filter_reports_unfiltered_total(self):
+        self.list_setup()
+        result = self.desktop.list_windows({'title_contains': 'no such window'})
+        self.assertEqual(result['windows'], [])
+        self.assertEqual(result['total_visible'], 2)
+
+    def test_list_windows_invalid_filters_no_enumeration(self):
+        for args in ({'title_contains': ''}, {'title_contains': 5}, {'title_contains': 'x' * 201},
+                     {'path_contains': ''}, {'path_contains': 5}, {'path_contains': 'x' * 261},
+                     {'pid': 0}, {'pid': 'x'}, {'pid': True}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.desktop.list_windows(args)
+        self.api.EnumWindows.assert_not_called()
+
+    @patch.object(d.time, 'sleep')
+    @patch.object(d.time, 'monotonic')
+    def test_wait_timeout_is_not_an_error(self, monotonic, sleep):
+        self.list_setup()
+        clock = {'t': 1000.0}
+        monotonic.side_effect = lambda: clock['t']
+        sleep.side_effect = lambda seconds: clock.__setitem__('t', clock['t'] + seconds)
+        result = self.desktop.wait_for({'condition': 'window_visible', 'title_contains': 'no such window',
+                                        'timeout_ms': 1000, 'interval_ms': 250})
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['satisfied'])
+        self.assertEqual(result['elapsed_ms'], 1000)
+        self.assertGreaterEqual(result['attempts'], 4)
+        self.assertEqual(result['timeout_ms'], 1000)
+
+    def test_wait_window_gone(self):
+        self.desktop.window.side_effect = ValueError('window is gone')
+        result = self.desktop.wait_for({'condition': 'window_gone', 'hwnd': 10})
+        self.assertTrue(result['satisfied'])
+        self.assertEqual(result['hwnd'], 10)
+        self.assertEqual(result['attempts'], 1)
+
+    @patch.object(d, 'read_ui')
+    def test_wait_element_present_by_substring(self, reader):
+        reader.return_value = {'elements': [
+            {'runtime_id': [1], 'name': 'Cancel', 'control_type': 'Button', 'automation_id': 'c',
+             'enabled': True, 'visible': True, 'rect': [0, 0, 10, 10]},
+            {'runtime_id': [2], 'name': 'Send message', 'control_type': 'Button', 'automation_id': 's',
+             'enabled': True, 'visible': True, 'rect': [0, 0, 10, 10]}]}
+        result = self.desktop.wait_for({'condition': 'element_present', 'hwnd': 10, 'name_contains': 'SEND'})
+        self.assertTrue(result['satisfied'])
+        self.assertEqual(result['element']['name'], 'Send message')
+        self.assertNotIn('runtime_id', result['element'])
+
+    @patch.object(d, 'read_ui')
+    def test_wait_element_truncated_name_never_matches_exactly(self, reader):
+        reader.return_value = {'elements': [
+            {'runtime_id': [1], 'name': 'Button', 'name_truncated': True, 'control_type': 'Button',
+             'automation_id': 'b', 'enabled': True, 'visible': True, 'rect': [0, 0, 10, 10]}]}
+        result = self.desktop.wait_for({'condition': 'element_present', 'hwnd': 10,
+                                        'name_exact': 'Button', 'timeout_ms': 100})
+        self.assertFalse(result['satisfied'])
+        self.assertEqual(result['elements_scanned'], 1)
+
+    @patch.object(d.time, 'sleep')
+    @patch.object(d.time, 'monotonic')
+    def test_wait_element_interval_has_a_floor(self, monotonic, sleep):
+        clock = {'t': 0.0}
+        monotonic.side_effect = lambda: clock['t']
+        sleep.side_effect = lambda seconds: clock.__setitem__('t', clock['t'] + seconds)
+        with patch.object(d, 'read_ui', return_value={'elements': []}):
+            result = self.desktop.wait_for({'condition': 'element_present', 'hwnd': 10, 'name_contains': 'x',
+                                            'interval_ms': 50, 'timeout_ms': 600})
+        self.assertEqual(result['interval_ms'], 500)
+
+    def test_wait_escape_cancels_without_input(self):
+        self.api.GetAsyncKeyState.return_value = 0x8000
+        with self.assertRaisesRegex(RuntimeError, 'cancelled'):
+            self.desktop.wait_for({'condition': 'window_gone', 'hwnd': 10})
+        self.api.SendInput.assert_not_called()
+
+    def test_wait_invalid_arguments_no_enumeration(self):
+        for args in ({'condition': 'bogus'},
+                     {'condition': 'window_visible'},
+                     {'condition': 'window_visible', 'title_contains': ''},
+                     {'condition': 'window_visible', 'title_contains': 5},
+                     {'condition': 'window_gone'},
+                     {'condition': 'window_gone', 'hwnd': 0},
+                     {'condition': 'element_present', 'hwnd': 10},
+                     {'condition': 'element_present', 'hwnd': 10, 'name_contains': 'a', 'name_exact': 'a'},
+                     {'condition': 'element_present', 'hwnd': 10, 'name_exact': 5},
+                     {'condition': 'window_visible', 'title_contains': 'a', 'timeout_ms': 50},
+                     {'condition': 'window_visible', 'title_contains': 'a', 'timeout_ms': 40000},
+                     {'condition': 'window_visible', 'title_contains': 'a', 'interval_ms': 10}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.desktop.wait_for(args)
+        self.api.EnumWindows.assert_not_called()
+
+    def test_wait_tool_result_is_annotated(self):
+        tool = next(t for t in d.build_tools(Mock(), Mock(), Mock()) if t['name'] == 'desktop_wait_for')
+        with patch.object(d.Desktop, 'wait_for', return_value={'ok': True, 'satisfied': False}):
+            result = tool['handler']({'condition': 'window_gone', 'hwnd': 10})
+        self.assertEqual(result['outcome'], 'condition_not_met')
+
     def element_setup(self):
         row = {'runtime_id': [1, 2], 'name': 'Button', 'control_type': 'Button',
                'automation_id': 'test', 'enabled': True, 'visible': True,

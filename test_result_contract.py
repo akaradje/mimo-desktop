@@ -20,6 +20,16 @@ class ContractTests(unittest.TestCase):
     def test_geometry_not_task_success(self):
         self.assertEqual(annotate('set_window_rect', {'ok': True, 'matched': False})['outcome'], 'geometry_mismatch')
 
+    def test_wait_timeout_is_a_truthful_outcome(self):
+        self.assertEqual(annotate('wait_for', {'ok': True, 'satisfied': True})['outcome'], 'condition_met')
+        timeout = annotate('wait_for', {'ok': True, 'satisfied': False})
+        self.assertEqual(timeout['outcome'], 'condition_not_met')
+        # A wait never injects input, so it must not borrow the input-delivery wording.
+        self.assertNotIn('verification', timeout)
+
+    def test_wait_does_not_claim_input_delivery(self):
+        self.assertNotIn('outcome', annotate('wait_for', {'ok': False}))
+
 
 if __name__ == '__main__':
     unittest.main()

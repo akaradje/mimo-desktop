@@ -264,6 +264,31 @@ observation normally clears the old one. `retain_previous: true` keeps up to eig
 distinct window observations for a cross-window gesture. Observing the same window
 replaces its earlier observation; a failed observation clears the cache.
 
+### Waiting instead of guessing
+
+`desktop_wait_for` polls a read-only condition, so you do not have to re-observe in a
+loop or sleep for a fixed time:
+
+| Condition | Required arguments | Satisfied when |
+|---|---|---|
+| `window_visible` | `title_contains` | A visible titled window matches |
+| `window_gone` | `hwnd` | The handle is no longer valid or visible |
+| `element_present` | `hwnd` plus exactly one of `name_contains` / `name_exact` | A UI Automation element matches |
+
+`timeout_ms` (100–30000, default 5000) and `interval_ms` (50–2000, default 250) bound
+the wait, and Escape cancels it. The tool sends no input and needs no
+`observation_id`, so waiting cannot consume a token or disturb the target. A timeout
+returns `satisfied: false` with `outcome: condition_not_met` — that is the answer, not
+an error. `element_present` asks the provider on every attempt, so its interval has a
+500 ms floor and one attempt can take up to eight seconds; the timeout is checked
+between attempts, not during one.
+
+`desktop_list_windows` accepts the same kind of narrowing: `title_contains`,
+`path_contains` (matches the executable path, so the file name works), and an exact
+`pid`. All three are case-insensitive substring matches except `pid`. The reply keeps
+`total_visible`, the unfiltered count, so a filter that hides everything is
+distinguishable from a desktop with no windows.
+
 ### Click and type
 
 After observing, click the intended editor. Observe once more to check focus, then
@@ -394,11 +419,12 @@ One tick is 120 Windows wheel units. Set `axis` to `vertical` or `horizontal`.
 
 ## Tool reference
 
-### Windows desktop — 14 tools
+### Windows desktop — 15 tools
 
 | Tool | Purpose |
 |---|---|
-| `desktop_list_windows` | Visible titled windows, HWND, PID, executable path, and geometry |
+| `desktop_list_windows` | Visible titled windows, HWND, PID, path; optional title/path/pid filters |
+| `desktop_wait_for` | Read-only wait for a window or element condition |
 | `desktop_observe` | Client-area screenshot, optional focus, and one-use observation ID |
 | `desktop_click` | Single/double left, right, or middle click |
 | `desktop_type_text` | Literal Unicode text without clipboard replacement |

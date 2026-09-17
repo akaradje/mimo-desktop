@@ -264,19 +264,118 @@ class Desktop:
                 'minimized': bool(U.IsIconic(hwnd)),
                 'client': {'x': pt.x, 'y': pt.y, 'width': rc.right, 'height': rc.bottom}}
 
+    def window_filters(self, args):
+        """Validate optional list_windows filters; absent filters match everything."""
+        filters = {}
+        for key, limit in (('title_contains', 200), ('path_contains', 260)):
+            value = args.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not 1 <= len(value) <= limit:
+                raise ValueError(f'{key} must be a string of 1..{limit} characters')
+            filters[key] = value
+        if args.get('pid') is not None:
+            filters['pid'] = integer(args, 'pid', 1, 2**32-1)
+        return filters
+
+    @staticmethod
+    def window_matches(w, filters):
+        """Case-insensitive substring filters over title and executable path, plus exact pid."""
+        if 'pid' in filters and w['pid'] != filters['pid']:
+            return False
+        for key, field in (('title_contains', 'title'), ('path_contains', 'path')):
+            if key in filters and filters[key].casefold() not in w[field].casefold():
+                return False
+        return True
+
     def list_windows(self, args):
-        result = []
+        filters = self.window_filters(args)
+        visible = []
         @ENUM
         def visit(hwnd, _):
             try:
                 w = self.window(int(hwnd))
                 if w['title'] and w['client']['width'] > 0:
-                    result.append(w)
+                    visible.append(w)
             except (ValueError, RuntimeError):
                 pass
             return True
         U.EnumWindows(visit, 0)
-        return {'ok': True, 'windows': result}
+        return {'ok': True, 'windows': [w for w in visible if self.window_matches(w, filters)],
+                'total_visible': len(visible), 'filters': filters}
+
+    def wait_checker(self, args):
+        """Build a read-only predicate for wait_for. Sends no input and holds no observation."""
+        condition = args.get('condition')
+        if condition == 'window_visible':
+            title = args.get('title_contains')
+            if not isinstance(title, str) or not 1 <= len(title) <= 200:
+                raise ValueError('window_visible requires title_contains as a string of 1..200 characters')
+
+            def check():
+                found = self.list_windows({'title_contains': title})['windows']
+                return bool(found), {'window': found[0]} if found else {'matched_windows': 0}
+
+            return condition, check
+        if condition == 'window_gone':
+            hwnd = integer(args, 'hwnd', 1, 2**63-1)
+
+            def check():
+                try:
+                    w = self.window(hwnd)
+                except (ValueError, RuntimeError):
+                    return True, {'hwnd': hwnd, 'reason': 'window is no longer valid or visible'}
+                return False, {'hwnd': hwnd, 'title': w['title']}
+
+            return condition, check
+        if condition == 'element_present':
+            hwnd = integer(args, 'hwnd', 1, 2**63-1)
+            contains, exact = args.get('name_contains'), args.get('name_exact')
+            if (contains is None) == (exact is None):
+                raise ValueError('element_present needs exactly one of name_contains or name_exact')
+            for key, value in (('name_contains', contains), ('name_exact', exact)):
+                if value is not None and (not isinstance(value, str) or not 1 <= len(value) <= 500):
+                    raise ValueError(f'{key} must be a string of 1..500 characters')
+
+            def check():
+                rows = read_ui(hwnd)['elements']
+                for row in rows:
+                    name = row['name']
+                    if contains is not None:
+                        hit = contains.casefold() in name.casefold()
+                    else:
+                        hit = name == exact and not row.get('name_truncated', False)
+                    if hit:
+                        return True, {'element': {k: row[k] for k in
+                                                  ('name', 'control_type', 'automation_id', 'rect', 'enabled', 'visible')}}
+                return False, {'elements_scanned': len(rows)}
+
+            return condition, check
+        raise ValueError('condition must be window_visible, window_gone or element_present')
+
+    def wait_for(self, args):
+        condition, check = self.wait_checker(args)
+        timeout = integer({'timeout_ms': args.get('timeout_ms', 5000)}, 'timeout_ms', 100, 30000)
+        interval = integer({'interval_ms': args.get('interval_ms', 250)}, 'interval_ms', 50, 2000)
+        if condition == 'element_present':
+            # Each provider call spawns an isolated worker; avoid hammering it.
+            interval = max(interval, 500)
+        started = time.monotonic()
+        attempts = 0
+        while True:
+            attempts += 1
+            if U.GetAsyncKeyState(27) & 0x8000:
+                raise RuntimeError('Wait cancelled by Escape; no input was sent')
+            satisfied, detail = check()
+            elapsed = (time.monotonic()-started)*1000
+            if satisfied or elapsed >= timeout:
+                return {'ok': True, 'condition': condition, 'satisfied': satisfied,
+                        'attempts': attempts, 'elapsed_ms': round(elapsed),
+                        'timeout_ms': timeout, 'interval_ms': interval, **detail,
+                        'note': ('Condition observed by a read-only check; no input was sent.'
+                                 if satisfied else
+                                 'Timeout reached without observing the condition; nothing was changed. Inspect the window before deciding what to do next.')}
+            time.sleep(min(interval, max(0.0, timeout-elapsed))/1000)
 
     def observe(self, args):
         # A failed refresh must not leave a previously observed target actionable.
@@ -558,7 +657,7 @@ def build_tools(capture, encode, blank):
     token = {'observation_id': {'type': 'string'}}
     xy = {'x': {'type': 'integer', 'minimum': 0}, 'y': {'type': 'integer', 'minimum': 0}}
     specs = [
-        ('list_windows', 'List visible Windows application windows and HWND/PID/path. Choose the intended window explicitly.', {}, []),
+        ('list_windows', 'List visible Windows application windows and HWND/PID/path. Choose the intended window explicitly. Optional case-insensitive substring filters (title_contains, path_contains) and an exact pid narrow the returned list; total_visible reports the unfiltered count so a filter that hides everything is visible as such.', {'title_contains': {'type': 'string', 'minLength': 1, 'maxLength': 200}, 'path_contains': {'type': 'string', 'minLength': 1, 'maxLength': 260}, 'pid': {'type': 'integer', 'minimum': 1}}, []),
         ('observe', 'Capture a selected window client area. Returns image and one-use observation_id valid for 60 seconds. Use focus=true before input. Inspect image before acting.', {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
         ('click', 'Click physical client-image coordinates from the latest observation. Reobserve after every action.', {**token, **xy, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'count': {'type': 'integer', 'minimum': 1, 'maximum': 2}}, ['observation_id', 'x', 'y']),
         ('drag', 'Drag inside the observed window client image, optionally through via points. Supports left/right/middle. Smooth movement, Escape cancellation, foreground/geometry checks throughout, and button release on failure. Partial movement can remain on failure; observe again, never blindly retry. Does not support cross-window dragging.', {**token, **{k: {'type': 'integer', 'minimum': 0} for k in ('from_x', 'from_y', 'to_x', 'to_y')}, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'duration_ms': {'type': 'integer', 'minimum': 100, 'maximum': 10000, 'default': 800}, 'via': {'type': 'array', 'maxItems': 64, 'items': {'type': 'object', 'properties': xy, 'required': ['x', 'y'], 'additionalProperties': False}}}, ['observation_id', 'from_x', 'from_y', 'to_x', 'to_y']),
@@ -617,6 +716,15 @@ def build_tools(capture, encode, blank):
     specs.extend([
         ('paste_text', 'Recommended explicit text-entry path for mixed scripts: replace clipboard and send Ctrl+V. Leaves supplied text on clipboard. Does not select existing text. Inspect/select/reinspect first for replace-all. Input delivery is not text verification.',
          {**token, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, ['observation_id', 'text']),
+        ('wait_for', 'Read-only poll until a condition holds or timeout_ms elapses. Conditions: window_visible (requires title_contains), window_gone (requires hwnd), element_present (requires hwnd plus exactly one of name_contains or name_exact). Sends no input and needs no observation_id, so it cannot disturb the target. A satisfied:false result is a normal timeout, not a failure; inspect the window before deciding what to do next. element_present queries the UI Automation provider, so each attempt can take up to 8 seconds and the timeout is only checked between attempts.',
+         {'condition': {'type': 'string', 'enum': ['window_visible', 'window_gone', 'element_present']},
+          'title_contains': {'type': 'string', 'minLength': 1, 'maxLength': 200},
+          'hwnd': {'type': 'integer', 'minimum': 1},
+          'name_contains': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+          'name_exact': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+          'timeout_ms': {'type': 'integer', 'minimum': 100, 'maximum': 30000, 'default': 5000},
+          'interval_ms': {'type': 'integer', 'minimum': 50, 'maximum': 2000, 'default': 250}},
+         ['condition']),
         ('verify_text', 'Read-only exact editor text verification via UIA ValuePattern/TextPattern. Use a fresh desktop_inspect element_index for the editor. Returns verified/mismatch/unavailable. No OCR guess or mutation. Does not return actual text. Unsupported providers report unavailable.',
          {**token, 'element_index': {'type': 'integer', 'minimum': 0}, 'expected_text': {'type': 'string', 'maxLength': 2000}}, ['observation_id', 'element_index', 'expected_text']),
         ('inspect', 'Capture window image and a bounded UI Automation tree. Returns element_index values tied to observation_id. Password controls omitted; names may contain private data. Providers can time out. Reinspect after input.',

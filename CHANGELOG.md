@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.0
+
+- Add `desktop_wait_for`: read-only polling for `window_visible`, `window_gone`, and
+  `element_present`, with bounded `timeout_ms`/`interval_ms` and Escape cancellation.
+  It sends no input and needs no observation, so waiting cannot disturb the target.
+  A timeout returns `satisfied: false` and `outcome: condition_not_met`, which is a
+  truthful answer rather than a failure. 15 desktop tools.
+- Add optional case-insensitive `title_contains`/`path_contains` and exact `pid`
+  filters to `desktop_list_windows`. `total_visible` still reports the unfiltered
+  count, so a filter that hides everything is visible as such.
+- Keep one UI Automation worker alive instead of starting a process per call, and
+  replace it — never reuse it — after a timeout, a crash, or an unreadable response.
+  A provider that answers with an error keeps its worker. Requests stay serialized
+  and the reader still owns the eight-second deadline.
+- 84 unit tests.
+
 ## 1.9.3
 
 - Recheck foreground, target geometry, and Escape state after a drag's final

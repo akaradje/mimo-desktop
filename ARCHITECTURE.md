@@ -27,7 +27,7 @@ flowchart TD
     RPC --> Desktop[desktop_control.py: observation and operation coordinator]
     Desktop --> Win32[Win32 input and window geometry]
     Desktop --> Clipboard[clipboard_text.py: explicit clipboard transport]
-    Desktop --> Reader[uia_reader.py: bounded subprocess request]
+    Desktop --> Reader[uia_reader.py: bounded worker request]
     Reader --> Worker[uia_worker.py: read-only UIA provider adapter]
     Worker --> App[Application accessibility provider]
     Desktop --> Contract[result_contract.py: delivery vs verification]
@@ -70,6 +70,8 @@ may read it after the tool returns; an immediate restore would introduce a race.
 | Exact text differs | `outcome: mismatch`, `matched: false` |
 | Provider cannot expose text | `outcome: unavailable`, `matched: null` |
 | Window geometry | `geometry_verified` or `geometry_mismatch` |
+| Wait condition observed | `outcome: condition_met`, `satisfied: true` |
+| Wait reached its timeout | `outcome: condition_not_met`, `satisfied: false` |
 
 `ok` retains backward-compatible meaning: the operation returned normally.
 Clients must inspect `outcome`/`verification` to determine what evidence exists.
@@ -91,11 +93,38 @@ detect over-limit content. ValuePattern has no length parameter and can return a
 larger value before the limit check. Password controls are not traversed or read.
 There is no OCR-based guess, and unavailable providers never count as a match.
 
-Each provider call is isolated in a subprocess with an eight-second timeout.
-An operation can perform more than one provider call, so this is not an eight-second
-overall tool deadline. Killing a stuck reader is safe because that worker has no
-mutation commands. A persistent worker could reduce startup latency, but would
-need independent cancellation and provider-recovery design; it is not claimed here.
+One long-lived worker process serves every provider call (1.10.0). Requests and
+responses are newline-delimited JSON, serialized because the coordinator is
+single-threaded. A reader thread drains stdout so the eight-second deadline can be
+enforced without blocking on a partial response, and each worker owns its own queue
+so a replaced worker's reader cannot deliver a stale line to its successor.
+
+The worker is discarded, never reused, after a timeout, a crash, or an unreadable
+response; the next call starts a fresh one. A worker that answers with a provider
+error is kept, because a provider that responded is not a broken transport.
+Discarding is safe because that worker has no mutation commands. An operation can
+perform more than one provider call, so this is not an eight-second overall tool
+deadline.
+
+## Waiting is not acting (1.10.0)
+
+`desktop_wait_for` polls a read-only predicate — a visible window title, a vanished
+handle, or a present UI Automation element — until it holds or `timeout_ms` elapses.
+It sends no input and needs no observation, so it cannot consume a token, take
+foreground, or disturb the target. That separation is deliberate: the existing
+"never retry automatically" rule is about injected input, and a bounded read-only poll
+is the safe way to let a host wait for a UI change instead of sleeping blindly.
+
+A timeout is reported as `satisfied: false` with `outcome: condition_not_met`. The
+condition was not observed within the budget, which is a different statement from
+"the operation failed", and the caller must inspect the window before deciding what
+to do next.
+
+Because `element_present` asks the provider on every attempt, its interval has a
+500 ms floor and a single attempt can overrun the timeout by up to one provider
+deadline. The tool bounds the number of attempts, not wall-clock precision. A
+provider that errors during a wait raises rather than counting as "not yet present",
+so an unreadable provider can never be mistaken for a satisfied condition.
 
 ## Recovery states
 

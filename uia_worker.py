@@ -1,4 +1,8 @@
-"""Read-only UI Automation worker; providers are isolated behind a process timeout."""
+"""Read-only UI Automation worker; providers are isolated behind a process timeout.
+
+Runs either as a long-lived `--serve` process (one JSON request per line) or as a
+one-shot process for manual diagnostics.
+"""
 import collections
 import json
 import sys
@@ -67,10 +71,36 @@ def inspect(hwnd, verification=None):
             'limits': {'nodes': 200, 'depth': 8}}
 
 
+def serve(stream_in, stream_out):
+    """Line-delimited request loop: one response per request, always flushed.
+
+    Running as a server keeps the provider warm. The reader still owns the
+    deadline: a wedged provider is killed by the parent, not by this process.
+    """
+    for line in stream_in:
+        line = line.strip()
+        if not line:
+            continue
+        request = None
+        try:
+            request = json.loads(line)
+            payload = inspect(int(request['hwnd']), request.get('verification'))
+            response = {'ok': True, **payload}
+        except Exception as exc:
+            response = {'ok': False, 'error': str(exc)}
+        response['id'] = request.get('id') if isinstance(request, dict) else None
+        stream_out.write(json.dumps(response, ensure_ascii=False) + '\n')
+        stream_out.flush()
+
+
 if __name__ == '__main__':
     sys.stdout.reconfigure(encoding='utf-8')
-    try:
-        request = json.loads(sys.stdin.buffer.read(32768) or b'{}')
-        print(json.dumps({'ok': True, **inspect(int(sys.argv[1]), request)}, ensure_ascii=False))
-    except Exception as exc:
-        print(json.dumps({'ok': False, 'error': str(exc)}))
+    if '--serve' in sys.argv[1:]:
+        serve(sys.stdin.buffer, sys.stdout)
+    else:
+        # One-shot mode remains available for manual diagnostics.
+        try:
+            request = json.loads(sys.stdin.buffer.read(32768) or b'{}')
+            print(json.dumps({'ok': True, **inspect(int(sys.argv[1]), request)}, ensure_ascii=False))
+        except Exception as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}))
