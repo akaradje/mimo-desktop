@@ -29,5 +29,47 @@ class BodyTests(unittest.TestCase):
                 self.request(b'[1234]', 5, error)
 
 
+class ToolErrorContractTests(unittest.TestCase):
+    """A failed tool call must stay machine-readable.
+
+    The desktop handlers return a structured payload (ok/status/error/next_action) for
+    the failures they expect. An unexpected exception — a missing optional dependency
+    is the usual one — used to escape that contract as a bare string, which a client
+    that parses the payload cannot interpret.
+    """
+
+    def call(self, handler):
+        with patch.dict(server.TOOLS_BY_NAME, {'probe': {'handler': handler}}):
+            return server.handle_tools_call({'name': 'probe', 'arguments': {}})
+
+    def payload(self, result):
+        return json.loads(next(b['text'] for b in result['content'] if b['type'] == 'text'))
+
+    def test_unexpected_exception_stays_parseable(self):
+        def boom(_args):
+            raise ModuleNotFoundError("No module named 'PIL'")
+        result = self.call(boom)
+        self.assertTrue(result['isError'])
+        body = self.payload(result)
+        self.assertIs(body['ok'], False)
+        self.assertEqual(body['status'], 'operation_failed')
+        self.assertIn('ModuleNotFoundError', body['error'])
+        self.assertIn('PIL', body['error'])
+        self.assertIs(body['retry_automatically'], False)
+        self.assertIn('next_action', body)
+
+    def test_handled_error_payload_is_untouched(self):
+        def refuse(_args):
+            return {'ok': False, 'status': 'invalid_state_or_argument', 'error': 'nope'}
+        result = self.call(refuse)
+        self.assertTrue(result['isError'])
+        self.assertEqual(self.payload(result)['status'], 'invalid_state_or_argument')
+
+    def test_success_is_not_marked_as_error(self):
+        result = self.call(lambda _args: {'ok': True, 'value': 1})
+        self.assertFalse(result['isError'])
+        self.assertEqual(self.payload(result)['value'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()

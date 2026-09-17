@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.11.2
+
+- Keep a failed tool call machine-readable. The desktop handlers return a structured
+  payload (`ok`/`status`/`error`/`next_action`) for the failures they expect, but an
+  unexpected exception escaped that contract as a bare string — `ModuleNotFoundError:
+  No module named 'PIL'` is the live case — which a client that parses the payload
+  cannot interpret. Such a failure now reports `status: operation_failed` with the
+  exception type preserved in `error`.
+- Add `test_uia_live.py`, an opt-in live check for the two provider-backed tools.
+  It derives its expected values from the live provider instead of hardcoding names,
+  sends no input, and restores the window that was in front. Run it with
+  `python test_uia_live.py --run`.
+- 106 unit tests.
+
 ## 1.11.1
 
 - Make the one-shot `uia_worker.py` diagnostic entry point accept the same request

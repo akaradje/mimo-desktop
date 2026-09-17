@@ -541,6 +541,20 @@ single-window scenarios and two cross-window payload drops, including Ctrl.
 The cross-window test verifies real events and a Tk drop handler, **not Windows
 OLE file transfer**. They are not run in hosted CI.
 
+### Opt-in live UI Automation test
+
+```powershell
+& .\.venv\Scripts\python.exe test_uia_live.py --run
+```
+
+Covers the two tools that need a real provider: `desktop_wait_for` with
+`element_present`, and `desktop_verify_text`. It derives its expected names and
+text from the live provider rather than hardcoding them, so it works on any
+desktop. It sends no input, but `desktop_verify_text` requires the target window
+in front, so the window that was in front is restored on exit. Pass
+`--hwnd N` to choose the text target; otherwise it scans visible windows for the
+first `Edit` or `Document` control.
+
 ### Live MiMo checks
 
 ```powershell
@@ -589,6 +603,7 @@ mimo-desktop/
 ├── test_mcp_client.py           # Independent stdio MCP client
 ├── test_desktop_live.py         # Opt-in disposable single-window input test
 ├── test_cross_window_live.py    # Opt-in two-window drop test
+├── test_uia_live.py             # Opt-in live UI Automation provider test
 ├── test_live_soak_readonly.py   # Read-only running-MiMo checks
 ├── _acl_test.py                 # Local ACL diagnostics
 ├── requirements.txt

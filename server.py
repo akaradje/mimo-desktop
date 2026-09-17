@@ -2585,7 +2585,7 @@ TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 # ---------------------------------------------------------------------------
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "mimo-desktop", "version": "1.11.1"}
+SERVER_INFO = {"name": "mimo-desktop", "version": "1.11.2"}
 
 
 def rpc_result(id_: Any, result: Any) -> dict[str, Any]:
@@ -2665,8 +2665,20 @@ def handle_tools_call(params: dict[str, Any]) -> dict[str, Any]:
         is_err = bool(isinstance(result, dict) and result.get("ok") is False)
         return {"content": content, "isError": is_err}
     except Exception as e:  # noqa: BLE001
+        # Every other tool failure returns a machine-readable payload, so a client can
+        # always parse the result. An unexpected exception — a missing optional
+        # dependency is the common case — must not escape that contract as a bare
+        # string, which a JSON-parsing client cannot interpret.
         return {
-            "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
+            "content": [{"type": "text", "text": json.dumps(
+                redact({
+                    "ok": False,
+                    "status": "operation_failed",
+                    "error": f"{type(e).__name__}: {e}",
+                    "retry_automatically": False,
+                    "next_action": "Inspect current state before retrying; partial input or "
+                                   "clipboard changes may remain.",
+                }), ensure_ascii=False, indent=2)}],
             "isError": True,
         }
 
