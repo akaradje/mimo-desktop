@@ -425,6 +425,7 @@ class Desktop:
                     lambda x, y: self.point({'x': x, 'y': y}, w), guard)
                 moves += stats['frames_sent']
             time.sleep(.05)
+            guard()
         finally:
             if pressed:
                 release_drag(up, modifiers)

@@ -146,6 +146,38 @@ class DesktopTests(unittest.TestCase):
             self.desktop.drag(self.drag_args(button='right'))
         self.assertEqual(self.api.SendInput.call_args.args[1][0].payload.mi.dwFlags, 16)
 
+    @patch.object(d, 'animate', return_value={'frames_sent': 1})
+    @patch.object(d.time, 'sleep')
+    def test_drag_final_dwell_failure_releases(self, sleep, _animate):
+        for failure in ('focus', 'escape', 'geometry'):
+            with self.subTest(failure=failure):
+                self.token()
+                self.api.GetForegroundWindow.return_value = 10
+                self.api.GetAsyncKeyState.side_effect = None
+                self.desktop.window.return_value = copy.deepcopy(self.w)
+                self.api.SendInput.reset_mock()
+                sleeps = 0
+
+                def interrupt(_seconds):
+                    nonlocal sleeps
+                    sleeps += 1
+                    if sleeps == 2:
+                        if failure == 'focus':
+                            self.api.GetForegroundWindow.return_value = 99
+                        elif failure == 'escape':
+                            self.api.GetAsyncKeyState.side_effect = lambda key: 0x8000 if key == 27 else 0
+                        else:
+                            self.desktop.window.return_value['client']['x'] += 1
+
+                sleep.side_effect = interrupt
+                error = RuntimeError if failure == 'escape' else ValueError
+                with self.assertRaises(error):
+                    self.desktop.drag(self.drag_args(modifiers=['ctrl']))
+                up = self.api.SendInput.call_args.args[1]
+                self.assertEqual(up[0].payload.mi.dwFlags, 4)
+                self.assertEqual(up[1].payload.ki.vk, 17)
+                self.assertEqual(up[1].payload.ki.flags, 2)
+
     def test_drag_invalid_path_no_input(self):
         for via in [[{'x': 301, 'y': 3}], [False], 'invalid', [{}]*65]:
             self.token()

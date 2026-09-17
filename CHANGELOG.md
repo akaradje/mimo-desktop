@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.3
+
+- Recheck foreground, target geometry, and Escape state after a drag's final
+  dwell, immediately before the button is released. A late focus loss, Escape
+  press, or window change now still unwinds the release path instead of leaving
+  a mouse button or modifier key held down.
+- Add a regression test covering focus-loss, Escape, and geometry-change
+  failures during the final dwell, asserting the button and modifiers are
+  released; 65 unit tests.
+
 ## 1.9.2
 
 - Refine the activity badge into a rounded charcoal capsule with an animated
