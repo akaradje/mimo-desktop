@@ -6,6 +6,15 @@
   apps (Paint) see motion while mouse buttons are held — not only a silent cursor jump.
 - Add `desktop_draw_stroke` for multi-path painting: polylines in client pixels,
   dense interpolation, per-stroke duration, Escape cancel, button release on failure.
+- **Fix the coordinate space of `desktop_draw_stroke`.** `absolute_move_event()` takes
+  virtual-screen coordinates, but the stroke loop handed it client-pixel points, so every
+  point after the first landed displaced by `-(client.x, client.y)` and sheared the whole
+  stroke. The first point was correct because it goes through `move_pointer()`, which adds
+  the client origin. Measured before/after on a 125%-scaled display: circle aspect ratio
+  **2.725 → 1.000**; square 165×165 against a 163×163 target; diagonal 1051×133 against
+  1048×131. The call returned `ok: true` throughout, so the defect was invisible from the
+  return value and the 116 unit tests were green either way — it was found by driving the
+  tool end-to-end over real MCP stdio and measuring the ink on the canvas.
 - Keep the existing pointer-arrival readback; the injected move runs only after the
   desktop confirms the cursor landed.
 - 116 unit tests.
