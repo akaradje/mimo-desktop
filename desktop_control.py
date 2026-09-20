@@ -668,7 +668,11 @@ class Desktop:
                         self.check_target(w)
                     if wait:
                         time.sleep(wait)
-                    send([absolute_move_event(nxt[0], nxt[1])])
+                    # nxt is in client pixels; absolute_move_event expects virtual-screen
+                    # coordinates. Without this offset every point after the
+                    # first lands displaced by -(client.x, client.y).
+                    send([absolute_move_event(nxt[0] + w['client']['x'],
+                                              nxt[1] + w['client']['y'])])
                     moves += 1
                     prev = nxt
                 time.sleep(.03)
