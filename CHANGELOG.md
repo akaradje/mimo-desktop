@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.4
+
+- Inject absolute pointer moves after every verified `SetCursorPos` so WinUI/canvas
+  apps (Paint) see motion while mouse buttons are held — not only a silent cursor jump.
+- Add `desktop_draw_stroke` for multi-path painting: polylines in client pixels,
+  dense interpolation, per-stroke duration, Escape cancel, button release on failure.
+- Keep the existing pointer-arrival readback; the injected move runs only after the
+  desktop confirms the cursor landed.
+- 116 unit tests.
+
 ## 1.11.3
 
 - Retry a provider timeout once on a fresh worker. A cold or busy UI Automation

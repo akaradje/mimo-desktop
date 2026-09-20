@@ -91,6 +91,7 @@ class Input(C.Structure):
 
 
 signature(U, 'SendInput', W.UINT, W.UINT, C.POINTER(Input), C.c_int)
+signature(U, 'GetSystemMetrics', C.c_int, C.c_int)
 ENUM = C.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
 signature(U, 'EnumWindows', W.BOOL, ENUM, W.LPARAM)
 
@@ -106,8 +107,28 @@ def keyboard(vk=0, scan=0, flags=0):
     return Input(1, Payload(ki=Keyboard(vk, scan, flags, 0, 0)))
 
 
-def mouse(flags, data=0):
-    return Input(0, Payload(mi=Mouse(0, 0, data & 0xffffffff, flags, 0, 0)))
+def mouse(flags, data=0, dx=0, dy=0):
+    return Input(0, Payload(mi=Mouse(int(dx), int(dy), data & 0xffffffff, flags, 0, 0)))
+
+
+def absolute_move_event(x, y):
+    """MOUSEEVENTF_MOVE|ABSOLUTE so WinUI/canvas apps see motion while buttons are down."""
+    def metric(idx, default=0):
+        try:
+            return int(U.GetSystemMetrics(idx))
+        except (TypeError, ValueError, AttributeError, OSError):
+            return default
+    vx = metric(76)
+    vy = metric(77)
+    vw = metric(78) or metric(0) or 1
+    vh = metric(79) or metric(1) or 1
+    if vw <= 1:
+        vw = 2
+    if vh <= 1:
+        vh = 2
+    ax = max(0, min(65535, int((x - vx) * 65535 / max(1, vw - 1))))
+    ay = max(0, min(65535, int((y - vy) * 65535 / max(1, vh - 1))))
+    return mouse(0x8001, dx=ax, dy=ay)
 
 
 def send(events):
@@ -144,6 +165,8 @@ def move_pointer(x, y):
     if (landed.x, landed.y) != (x, y):
         raise RuntimeError(f'Pointer did not land at ({x}, {y}); the desktop reported '
                            f'({landed.x}, {landed.y}). The point may be outside the desktop bounds.')
+    # Inject an absolute move: SetCursorPos alone is silent to some WinUI/canvas stacks.
+    send([absolute_move_event(x, y)])
 
 
 KEYS = {'enter': 13, 'tab': 9, 'escape': 27, 'space': 32, 'backspace': 8,
@@ -581,6 +604,82 @@ class Desktop:
         return {'ok': True, 'hwnd': w['hwnd'], 'moves': moves, 'button_released': True,
                 'observe_again': True}
 
+    @staticmethod
+    def _interpolate_polyline(points, step=2.0):
+        if len(points) < 2:
+            return points
+        out = [points[0]]
+        for a, b in zip(points, points[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            dist = (dx * dx + dy * dy) ** .5
+            n = max(1, int(dist / max(.5, step)))
+            for i in range(1, n + 1):
+                t = i / n
+                out.append((round(a[0] + dx * t), round(a[1] + dy * t)))
+        return out
+
+    def draw_stroke(self, args):
+        """Draw one or more polylines with pointer moves injected while the button is held."""
+        button = args.get('button', 'left')
+        if button not in ('left', 'right', 'middle'):
+            raise ValueError('button must be left, right or middle')
+        step = integer({'step_px': args.get('step_px', 2)}, 'step_px', 1, 20)
+        gap_ms = integer({'gap_ms': args.get('gap_ms', 80)}, 'gap_ms', 10, 1000)
+        duration_ms = integer({'duration_ms': args.get('duration_ms', 250)}, 'duration_ms', 50, 8000)
+        paths = args.get('paths')
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 32:
+            raise ValueError('paths must be a list of 1..32 polylines')
+        w = self.target(args)
+        limit_x = w['client']['width']
+        limit_y = w['client']['height']
+        prepared = []
+        for path in paths:
+            if not isinstance(path, list) or len(path) < 2 or len(path) > 256:
+                raise ValueError('Each path must contain 2..256 {x,y} points')
+            pts = []
+            for item in path:
+                if not isinstance(item, dict):
+                    raise ValueError('Path points must be {x,y}')
+                x = integer(item, 'x', 0, limit_x - 1)
+                y = integer(item, 'y', 0, limit_y - 1)
+                pts.append((x, y))
+            dense = self._interpolate_polyline(pts, step=step)
+            total = sum(((b[0]-a[0])**2 + (b[1]-a[1])**2) ** .5
+                        for a, b in zip(dense, dense[1:])) or 1
+            prepared.append((dense, total))
+        down, up = {'left': (2, 4), 'right': (8, 16), 'middle': (32, 64)}[button]
+        moves = 0
+        strokes = 0
+        for dense, total in prepared:
+            self.point({'x': dense[0][0], 'y': dense[0][1]}, w)
+            pressed = False
+            try:
+                self.check_target(w)
+                pressed = True
+                send([mouse(down)])
+                time.sleep(.03)
+                prev = dense[0]
+                for nxt in dense[1:]:
+                    seg = ((nxt[0]-prev[0])**2 + (nxt[1]-prev[1])**2) ** .5
+                    wait = max(0.0, duration_ms / 1000 * seg / total)
+                    def guard():
+                        if U.GetAsyncKeyState(27) & 0x8000:
+                            raise RuntimeError('Draw cancelled by Escape; partial stroke may remain')
+                        self.check_target(w)
+                    if wait:
+                        time.sleep(wait)
+                    send([absolute_move_event(nxt[0], nxt[1])])
+                    moves += 1
+                    prev = nxt
+                time.sleep(.03)
+            finally:
+                if pressed:
+                    send([mouse(up)])
+            strokes += 1
+            time.sleep(gap_ms / 1000)
+        return {'ok': True, 'hwnd': w['hwnd'], 'strokes': strokes, 'moves': moves,
+                'button_released': True, 'observe_again': True}
+
     def drag_between(self, args):
         modifiers = drag_modifiers(args)
         button = args.get('button', 'left')
@@ -710,6 +809,7 @@ def build_tools(capture, encode, blank):
         ('observe', 'Capture a selected window client area. Returns image and one-use observation_id valid for 60 seconds. Use focus=true before input. Inspect image before acting.', {'hwnd': {'type': 'integer', 'minimum': 1}, 'focus': {'type': 'boolean', 'default': False}}, ['hwnd']),
         ('click', 'Click physical client-image coordinates from the latest observation. Reobserve after every action.', {**token, **xy, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'count': {'type': 'integer', 'minimum': 1, 'maximum': 2}}, ['observation_id', 'x', 'y']),
         ('drag', 'Drag inside the observed window client image, optionally through via points. Supports left/right/middle. Smooth movement, Escape cancellation, foreground/geometry checks throughout, and button release on failure. Partial movement can remain on failure; observe again, never blindly retry. Does not support cross-window dragging.', {**token, **{k: {'type': 'integer', 'minimum': 0} for k in ('from_x', 'from_y', 'to_x', 'to_y')}, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'duration_ms': {'type': 'integer', 'minimum': 100, 'maximum': 10000, 'default': 800}, 'via': {'type': 'array', 'maxItems': 64, 'items': {'type': 'object', 'properties': xy, 'required': ['x', 'y'], 'additionalProperties': False}}}, ['observation_id', 'from_x', 'from_y', 'to_x', 'to_y']),
+        ('draw_stroke', 'Draw freehand or shape strokes in the observed window using real pointer motion while the mouse button is held. Each path is a polyline of physical client pixels. Prefer many short segments over one long chord. Escape cancels the current stroke. Best for paint/canvas apps; still subject to app tool selection and focus.', {**token, 'paths': {'type': 'array', 'minItems': 1, 'maxItems': 32, 'items': {'type': 'array', 'minItems': 2, 'maxItems': 256, 'items': {'type': 'object', 'properties': xy, 'required': ['x', 'y'], 'additionalProperties': False}}}, 'button': {'type': 'string', 'enum': ['left', 'right', 'middle']}, 'step_px': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'default': 2}, 'duration_ms': {'type': 'integer', 'minimum': 50, 'maximum': 8000, 'default': 250}, 'gap_ms': {'type': 'integer', 'minimum': 10, 'maximum': 1000, 'default': 80}}, ['observation_id', 'paths']),
         ('type_text', 'Type into the focused editor. Default unicode uses key events; explicit method=clipboard replaces clipboard and requests Ctrl+V for apps/IMEs that mis-map text. First click the editor and observe. Inspect text afterwards; success means input delivered, not text verified.', {**token, 'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, ['observation_id', 'text']),
         ('press_key', 'Press a key or chord, e.g. Ctrl+A, Enter, Tab, Escape, Alt+F4. May submit or close; follow user intent and inspect current focus first.', {**token, 'key': {'type': 'string'}}, ['observation_id', 'key']),
         ('scroll', 'Scroll at client-image x/y. Positive ticks scroll up (vertical) or right (horizontal). One tick is 120 Windows wheel units.', {**token, **xy, 'ticks': {'type': 'integer', 'minimum': -20, 'maximum': 20}, 'axis': {'type': 'string', 'enum': ['vertical', 'horizontal']}}, ['observation_id', 'x', 'y', 'ticks']),

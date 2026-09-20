@@ -35,6 +35,7 @@ class DesktopTests(unittest.TestCase):
 
         self.api.SetCursorPos.side_effect = set_cursor
         self.api.GetCursorPos.side_effect = get_cursor
+        self.api.GetSystemMetrics.side_effect = lambda idx: {76: 0, 77: 0, 78: 1920, 79: 1080, 0: 1920, 1: 1080}.get(idx, 1)
         self.token()
 
     def token(self, age=0):
@@ -114,10 +115,14 @@ class DesktopTests(unittest.TestCase):
 
     def test_scroll_direction(self):
         self.desktop.scroll({'observation_id': 'test', 'x': 2, 'y': 3, 'ticks': -2})
-        event = self.api.SendInput.call_args.args[1][0]
-        self.assertEqual(event.payload.mi.mouseData, (-120) & 0xffffffff)
-        self.assertEqual(self.api.SendInput.call_count, 2)
-        self.assertEqual(event.payload.mi.dwFlags, 0x800)
+        wheel = []
+        for call in self.api.SendInput.call_args_list:
+            for event in call.args[1]:
+                if event.type == 0 and event.payload.mi.dwFlags == 0x800:
+                    wheel.append(event)
+        self.assertTrue(wheel)
+        self.assertEqual(wheel[0].payload.mi.mouseData, (-120) & 0xffffffff)
+        self.api.SetCursorPos.assert_called()
 
     def test_partial_input_release(self):
         self.api.SendInput.side_effect = [1, 1]
@@ -136,8 +141,14 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(result['button_released'])
         self.api.SetCursorPos.assert_any_call(-420, 250)
         self.api.SetCursorPos.assert_called_with(-350, 200)
-        self.assertEqual(self.api.SendInput.call_args_list[0].args[1][0].payload.mi.dwFlags, 2)
-        self.assertEqual(self.api.SendInput.call_args.args[1][0].payload.mi.dwFlags, 4)
+        flags = []
+        for call in self.api.SendInput.call_args_list:
+            for event in call.args[1]:
+                if event.type == 0:
+                    flags.append(event.payload.mi.dwFlags)
+        self.assertIn(2, flags)
+        self.assertIn(0x8001, flags)
+        self.assertEqual(flags[-1], 4)
 
     @patch.object(d.time, 'sleep')
     def test_drag_focus_loss_releases(self, _sleep):
@@ -167,7 +178,8 @@ class DesktopTests(unittest.TestCase):
         self.api.SetCursorPos.side_effect = set_cursor
         with self.assertRaisesRegex(RuntimeError, 'pointer'):
             self.desktop.drag(self.drag_args(button='right'))
-        self.assertEqual(self.api.SendInput.call_args.args[1][0].payload.mi.dwFlags, 16)
+        last = self.api.SendInput.call_args.args[1]
+        self.assertTrue(any(e.type == 0 and e.payload.mi.dwFlags == 16 for e in last))
 
     @patch.object(d, 'animate', return_value={'frames_sent': 1})
     @patch.object(d.time, 'sleep')
@@ -211,10 +223,22 @@ class DesktopTests(unittest.TestCase):
 
     @patch.object(d.time, 'sleep')
     def test_drag_release_retry(self, _sleep):
-        self.api.SendInput.side_effect = [1, 0, 1]
+        failed = {'up': False}
+
+        def side_effect(count, events, _size):
+            if not failed['up']:
+                for event in events:
+                    if event.type == 0 and event.payload.mi.dwFlags == 64:
+                        failed['up'] = True
+                        return 0
+            return count
+
+        self.api.SendInput.side_effect = side_effect
         self.desktop.drag(self.drag_args(button='middle'))
-        self.assertEqual(self.api.SendInput.call_count, 3)
-        self.assertEqual(self.api.SendInput.call_args.args[1][0].payload.mi.dwFlags, 64)
+        self.assertTrue(failed['up'])
+        ups = [e.payload.mi.dwFlags for c in self.api.SendInput.call_args_list
+               for e in c.args[1] if e.type == 0 and e.payload.mi.dwFlags == 64]
+        self.assertGreaterEqual(len(ups), 2)
 
     def test_failed_observe_invalidates_token(self):
         with self.assertRaises(ValueError):
@@ -238,11 +262,17 @@ class DesktopTests(unittest.TestCase):
     @patch.object(d.time, 'sleep')
     def test_drag_modifiers_released(self, _sleep):
         self.desktop.drag(self.drag_args(modifiers=['ctrl', 'shift']))
-        down = self.api.SendInput.call_args_list[0].args[1]
-        self.assertEqual([down[i].payload.ki.vk for i in (0, 1)], [17, 16])
+        down = None
+        for call in self.api.SendInput.call_args_list:
+            keyed = [e.payload.ki.vk for e in call.args[1] if e.type == 1]
+            if keyed:
+                down = keyed
+                break
+        self.assertEqual(down[:2], [17, 16])
         up = self.api.SendInput.call_args.args[1]
-        self.assertEqual(up[0].payload.mi.dwFlags, 4)
-        self.assertEqual([up[i].payload.ki.vk for i in (1, 2)], [16, 17])
+        self.assertTrue(any(e.type == 0 and e.payload.mi.dwFlags == 4 for e in up))
+        up_keys = [e.payload.ki.vk for e in up if e.type == 1]
+        self.assertEqual(up_keys[:2], [16, 17])
 
     def cross_setup(self):
         dest = {**self.w, 'hwnd': 30, 'pid': 40,

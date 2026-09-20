@@ -520,7 +520,7 @@ tested at the stdio contract level; it is not a claim of certification across ho
 ### Local tests without desktop input
 
 ```powershell
-& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract test_motion test_activity
+& .\.venv\Scripts\python.exe -m unittest test_desktop_control test_api_body test_clipboard_text test_uia_reader test_result_contract test_motion test_activity test_draw_stroke
 & .\.venv\Scripts\python.exe test_sse_stress.py
 ```
 
